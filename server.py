@@ -33,5 +33,8 @@ async def get_csv():
         headers={"Content-Disposition": "attachment; filename=data.csv"}
     )
 
+import os
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8111)
+    port = int(os.environ.get("PORT", 8111))
+    uvicorn.run(app, host="0.0.0.0", port=port)
