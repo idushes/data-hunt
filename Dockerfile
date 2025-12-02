@@ -30,6 +30,7 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy the application code
 COPY server.py .
+COPY data.csv .
 
 # Set environment variables to use the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
