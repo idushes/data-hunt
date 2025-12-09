@@ -29,7 +29,9 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 
 # Copy the application code
-COPY server.py .
+# Copy the application code
+COPY server.py config.py tasks.py ./
+COPY routers ./routers
 COPY data.csv .
 
 # Set environment variables to use the virtual environment
