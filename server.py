@@ -1,7 +1,7 @@
 import os
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -36,18 +36,10 @@ async def lifespan(app: FastAPI):
     # Shutdown logic
     scheduler.shutdown()
 
-app = FastAPI(lifespan=lifespan)
+from routers.csv import router as csv_router
 
-@app.get("/csv")
-async def get_csv():
-    # Return the file directly
-    if os.path.exists("data.csv"):
-        return FileResponse(
-            "data.csv",
-            media_type="text/csv",
-            filename="data.csv"
-        )
-    return {"error": "data.csv not found"}
+app = FastAPI(lifespan=lifespan)
+app.include_router(csv_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
