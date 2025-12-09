@@ -8,12 +8,12 @@ from fastapi.responses import Response
 
 router = APIRouter()
 
-@router.get("/protocols")
-async def get_protocols():
-    # Columns: address (last 4), id, chain
+@router.get("/debt")
+async def get_debt():
+    # Columns: id (combined), debt
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["address", "id", "chain"])
+    writer.writerow(["id", "debt"])
 
     # Iterate over all .json files in data/
     json_files = glob("data/*.json")
@@ -36,7 +36,18 @@ async def get_protocols():
                     protocol_id = item.get("id", "")
                     chain = item.get("chain", "")
                     
-                    writer.writerow([address_short, protocol_id, chain])
+                    # Calculate total debt for this protocol
+                    total_debt = 0.0
+                    portfolio_list = item.get("portfolio_item_list", [])
+                    for portfolio in portfolio_list:
+                        stats = portfolio.get("stats", {})
+                        debt_value = stats.get("debt_usd_value", 0)
+                        total_debt += debt_value
+                    
+                    # Sort out negligible debts (optional, but requested > 0, using slight threshold for float precision good practice or strict > 0)
+                    if total_debt > 0:
+                        combined_id = f"{address_short}-{protocol_id}-{chain}"
+                        writer.writerow([combined_id, total_debt])
                     
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
