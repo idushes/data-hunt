@@ -13,7 +13,7 @@ from tasks import fetch_and_save_data
 async def lifespan(app: FastAPI):
     # Startup logic
     if not DEBANK_ACCESS_KEY:
-        raise ValueError("DEBANK_ACCESS_KEY is not set in environment variables! Application exiting.")
+        print("DEBANK_ACCESS_KEY is not set in environment variables!")
     
     ids = get_target_ids()
     print(f"Scheduler configured. Target IDs: {ids}")
