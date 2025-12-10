@@ -48,6 +48,12 @@ async def get_debt():
                         # Get health rate
                         health_rate = detail.get("health_rate")
                         
+                        # Get supply token symbol
+                        supply_list = detail.get("supply_token_list", [])
+                        supply_symbol = ""
+                        if supply_list:
+                            supply_symbol = supply_list[0].get("symbol", "").lower()
+
                         # Iterate borrow list
                         borrow_list = detail.get("borrow_token_list", [])
                         
@@ -59,6 +65,9 @@ async def get_debt():
                             symbol = borrow.get("symbol", "")
                             
                             combined_id = f"{address_short}-{protocol_id}-{chain}"
+                            if supply_symbol:
+                                combined_id += f"-{supply_symbol}"
+                                
                             writer.writerow([combined_id, amount, symbol, health_rate, reward_usd])
 
         except Exception as e:
