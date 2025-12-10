@@ -37,9 +37,11 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 from routers.debt import router as debt_router
+from routers.stability import router as stability_router
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(debt_router)
+app.include_router(stability_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
