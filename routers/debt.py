@@ -10,10 +10,10 @@ router = APIRouter()
 
 @router.get("/debt")
 async def get_debt():
-    # Columns: id, amount, symbol, health_rate, reward
+    # Columns: id, amount, symbol, health_rate, reward, supply_amount, supply_symbol
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "amount", "symbol", "health_rate", "reward"])
+    writer.writerow(["id", "amount", "symbol", "health_rate", "reward", "supply_amount", "supply_symbol"])
 
     # Iterate over all .json files in data/
     json_files = glob("data/*.json")
@@ -48,11 +48,15 @@ async def get_debt():
                         # Get health rate
                         health_rate = detail.get("health_rate")
                         
-                        # Get supply token symbol
+                        # Get supply token symbol and amount
                         supply_list = detail.get("supply_token_list", [])
                         supply_symbol = ""
+                        supply_amount = 0
                         if supply_list:
-                            supply_symbol = supply_list[0].get("symbol", "").lower()
+                            supply_symbol = supply_list[0].get("symbol", "")
+                            supply_amount = supply_list[0].get("amount", 0)
+                        
+                        supply_symbol_lower = supply_symbol.lower()
 
                         # Iterate borrow list
                         borrow_list = detail.get("borrow_token_list", [])
@@ -65,10 +69,10 @@ async def get_debt():
                             symbol = borrow.get("symbol", "")
                             
                             combined_id = f"{address_short}-{protocol_id}-{chain}"
-                            if supply_symbol:
-                                combined_id += f"-{supply_symbol}"
+                            if supply_symbol_lower:
+                                combined_id += f"-{supply_symbol_lower}"
                                 
-                            writer.writerow([combined_id, amount, symbol, health_rate, reward_usd])
+                            writer.writerow([combined_id, amount, symbol, health_rate, reward_usd, supply_amount, supply_symbol])
 
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
