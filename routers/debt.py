@@ -10,10 +10,10 @@ router = APIRouter()
 
 @router.get("/debt")
 async def get_debt():
-    # Columns: id (combined), debt
+    # Columns: id, amount, symbol, health_rate, reward
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "debt"])
+    writer.writerow(["id", "amount", "symbol", "health_rate", "reward"])
 
     # Iterate over all .json files in data/
     json_files = glob("data/*.json")
@@ -36,19 +36,31 @@ async def get_debt():
                     protocol_id = item.get("id", "")
                     chain = item.get("chain", "")
                     
-                    # Calculate total debt for this protocol
-                    total_debt = 0.0
                     portfolio_list = item.get("portfolio_item_list", [])
                     for portfolio in portfolio_list:
-                        stats = portfolio.get("stats", {})
-                        debt_value = stats.get("debt_usd_value", 0)
-                        total_debt += debt_value
-                    
-                    # Sort out negligible debts (optional, but requested > 0, using slight threshold for float precision good practice or strict > 0)
-                    if total_debt > 0:
-                        combined_id = f"{address_short}-{protocol_id}-{chain}"
-                        writer.writerow([combined_id, total_debt])
-                    
+                        # Get Detail
+                        detail = portfolio.get("detail", {})
+                        
+                        # Calculate total reward USD value
+                        reward_list = detail.get("reward_token_list", [])
+                        reward_usd = sum(r.get("amount", 0) * r.get("price", 0) for r in reward_list)
+                        
+                        # Get health rate
+                        health_rate = detail.get("health_rate")
+                        
+                        # Iterate borrow list
+                        borrow_list = detail.get("borrow_token_list", [])
+                        
+                        if not borrow_list:
+                            continue
+                            
+                        for borrow in borrow_list:
+                            amount = borrow.get("amount", 0)
+                            symbol = borrow.get("symbol", "")
+                            
+                            combined_id = f"{address_short}-{protocol_id}-{chain}"
+                            writer.writerow([combined_id, amount, symbol, health_rate, reward_usd])
+
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
             continue
