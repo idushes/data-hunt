@@ -7,7 +7,7 @@ load_dotenv()
 
 # Configuration
 DEBANK_ACCESS_KEY = os.environ.get("DEBANK_ACCESS_KEY")
-SCHEDULE_TIME = os.environ.get("SCHEDULE_TIME", "00:00")
+UPDATE_INTERVAL = os.environ.get("UPDATE_INTERVAL", "24h")
 PORT = int(os.environ.get("PORT", 8111))
 RUN_ON_STARTUP = os.environ.get("RUN_ON_STARTUP", "false").lower() == "true"
 
@@ -19,11 +19,29 @@ def get_target_ids() -> List[str]:
             ids.append(value)
     return ids
 
-def get_schedule_time_parts():
-    """Parses SCHEDULE_TIME into (hour, minute) tuple"""
+def get_scheduler_trigger_args():
+    """Parses UPDATE_INTERVAL into scheduler trigger arguments"""
+    val = UPDATE_INTERVAL.strip()
+    
+    # Cron capability (HH:MM)
+    if ":" in val:
+        try:
+            hour, minute = map(int, val.split(":"))
+            return {"trigger": "cron", "hour": hour, "minute": minute}
+        except ValueError:
+            print(f"Invalid UPDATE_INTERVAL format '{val}', defaulting to 24h")
+            return {"trigger": "interval", "hours": 24}
+
+    # Interval capability
     try:
-        hour, minute = map(int, SCHEDULE_TIME.split(":"))
-        return hour, minute
+        if val.endswith("m"):
+            return {"trigger": "interval", "minutes": int(val[:-1])}
+        elif val.endswith("h"):
+            return {"trigger": "interval", "hours": int(val[:-1])}
+        elif val.endswith("d"):
+            return {"trigger": "interval", "days": int(val[:-1])}
     except ValueError:
-        print(f"Invalid SCHEDULE_TIME format '{SCHEDULE_TIME}', defaulting to 00:00")
-        return 0, 0
+        pass
+    
+    print(f"Invalid UPDATE_INTERVAL format '{val}', defaulting to 24h")
+    return {"trigger": "interval", "hours": 24}

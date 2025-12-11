@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from config import DEBANK_ACCESS_KEY, PORT, get_target_ids, get_schedule_time_parts, RUN_ON_STARTUP
+from config import DEBANK_ACCESS_KEY, PORT, get_target_ids, get_scheduler_trigger_args, RUN_ON_STARTUP
 from tasks import fetch_and_save_data
 
 @asynccontextmanager
@@ -22,14 +22,24 @@ async def lifespan(app: FastAPI):
         print("RUN_ON_STARTUP is True. Executing fetch task now...")
         await fetch_and_save_data()
 
-    hour, minute = get_schedule_time_parts()
+    trigger_args = get_scheduler_trigger_args()
     
     scheduler = AsyncIOScheduler()
-    trigger = CronTrigger(hour=hour, minute=minute)
-    scheduler.add_job(fetch_and_save_data, trigger)
-    scheduler.start()
+    # Support both CronTrigger and IntervalTrigger based on config
+    if trigger_args["trigger"] == "cron":
+        trigger = CronTrigger(hour=trigger_args["hour"], minute=trigger_args["minute"])
+        print(f"Scheduler started. Task will run daily at {trigger_args['hour']:02d}:{trigger_args['minute']:02d}")
+    else:
+        # Remove 'trigger' key safely
+        kwargs = trigger_args.copy()
+        kwargs.pop("trigger")
+        scheduler.add_job(fetch_and_save_data, "interval", **kwargs)
+        print(f"Scheduler started. Task will run with interval: {kwargs}")
+        
+    if trigger_args["trigger"] == "cron":
+        scheduler.add_job(fetch_and_save_data, trigger)
     
-    print(f"Scheduler started. Task will run daily at {hour:02d}:{minute:02d}")
+    scheduler.start()
     
     yield
     
