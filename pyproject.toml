@@ -10,4 +10,5 @@ dependencies = [
     "httpx>=0.28.1",
     "python-dotenv>=1.2.1",
     "uvicorn>=0.38.0",
+    "web3>=7.14.0",
 ]
