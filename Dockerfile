@@ -30,7 +30,7 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy the application code
 # Copy the application code
-COPY server.py config.py tasks.py database.py models.py dependencies.py security.py alembic.ini gunicorn_conf.py ./
+COPY server.py config.py tasks.py database.py models.py dependencies.py security.py alembic.ini ./
 COPY alembic ./alembic
 COPY routers ./routers
 
@@ -43,4 +43,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8111
 
 # Command to run the application
-CMD ["gunicorn", "server:app"]
+CMD gunicorn server:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
