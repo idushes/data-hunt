@@ -15,6 +15,6 @@ dependencies = [
     "web3>=7.14.0",
     "sqlalchemy>=2.0.45",
     "psycopg2-binary>=2.9.10",
-    "psycopg2>=2.9.11",
+
     "pyjwt>=2.10.1",
 ]
