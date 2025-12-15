@@ -20,7 +20,7 @@ RUN uv sync --frozen --no-install-project
 
 # Stage 2: Final
 # We use a slim python image for the runtime
-FROM python:3.13-slim-bookworm
+FROM python:3.13-slim
 
 # Set the working directory
 WORKDIR /app

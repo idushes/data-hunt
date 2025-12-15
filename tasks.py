@@ -4,16 +4,20 @@ import httpx
 from datetime import datetime
 from config import DEBANK_ACCESS_KEY, get_target_ids
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 async def fetch_and_save_data():
-    print(f"[{datetime.now()}] Starting data fetch task...")
+    logger.info(f"[{datetime.now()}] Starting data fetch task...")
     
     if not DEBANK_ACCESS_KEY:
-        print("Error: DEBANK_ACCESS_KEY is missing!")
+        logger.error("Error: DEBANK_ACCESS_KEY is missing!")
         return
 
     target_ids = get_target_ids()
     if not target_ids:
-        print("Warning: No target IDs found (ENV keys starting with TARGET_ID_)")
+        logger.warning("Warning: No target IDs found (ENV keys starting with TARGET_ID_)")
         return
 
     async with httpx.AsyncClient() as client:
@@ -24,7 +28,7 @@ async def fetch_and_save_data():
                 url = "https://pro-openapi.debank.com/v1/user/all_complex_protocol_list"
                 params = {"id": user_id}
                 
-                print(f"Fetching data for {user_id}...")
+                logger.info(f"Fetching data for {user_id}...")
                 response = await client.get(url, params=params, headers=headers)
                 response.raise_for_status()
                 
@@ -37,9 +41,9 @@ async def fetch_and_save_data():
                 with open(file_path, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
                 
-                print(f"Saved data to {file_path}")
+                logger.info(f"Saved data to {file_path}")
                 
             except Exception as e:
-                print(f"Failed to fetch data for {user_id}: {str(e)}")
+                logger.error(f"Failed to fetch data for {user_id}: {str(e)}")
     
-    print(f"[{datetime.now()}] Data fetch task completed.")
+    logger.info(f"[{datetime.now()}] Data fetch task completed.")

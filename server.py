@@ -1,4 +1,6 @@
 import os
+import sys
+import logging
 import uvicorn
 from fastapi import FastAPI
 
@@ -11,27 +13,35 @@ from tasks import fetch_and_save_data
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+    logger = logging.getLogger(__name__)
+
     # Startup logic
     if not DEBANK_ACCESS_KEY:
-        print("DEBANK_ACCESS_KEY is not set in environment variables!")
+        logger.warning("DEBANK_ACCESS_KEY is not set in environment variables!")
     
     ids = get_target_ids()
-    print(f"Scheduler configured. Target IDs: {ids}")
+    logger.info(f"Scheduler configured. Target IDs: {ids}")
 
     if RUN_ON_STARTUP:
-        print("RUN_ON_STARTUP is True. Executing fetch task now...")
+        logger.info("RUN_ON_STARTUP is True. Executing fetch task now...")
         await fetch_and_save_data()
 
     # Run database migrations
-    print("Running database migrations...")
+    logger.info("Running database migrations...")
     try:
         from alembic import command
         from alembic.config import Config
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")
-        print("Database migrations applied successfully.")
+        logger.info("Database migrations applied successfully.")
     except Exception as e:
-        print(f"Error applying migrations: {e}")
+        logger.error(f"Error applying migrations: {e}")
 
     trigger_args = get_scheduler_trigger_args()
     
@@ -39,13 +49,13 @@ async def lifespan(app: FastAPI):
     # Support both CronTrigger and IntervalTrigger based on config
     if trigger_args["trigger"] == "cron":
         trigger = CronTrigger(hour=trigger_args["hour"], minute=trigger_args["minute"])
-        print(f"Scheduler started. Task will run daily at {trigger_args['hour']:02d}:{trigger_args['minute']:02d}")
+        logger.info(f"Scheduler started. Task will run daily at {trigger_args['hour']:02d}:{trigger_args['minute']:02d}")
     else:
         # Remove 'trigger' key safely
         kwargs = trigger_args.copy()
         kwargs.pop("trigger")
         scheduler.add_job(fetch_and_save_data, "interval", **kwargs)
-        print(f"Scheduler started. Task will run with interval: {kwargs}")
+        logger.info(f"Scheduler started. Task will run with interval: {kwargs}")
         
     if trigger_args["trigger"] == "cron":
         scheduler.add_job(fetch_and_save_data, trigger)

@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import List
 from dotenv import load_dotenv
 
@@ -34,7 +35,7 @@ def get_scheduler_trigger_args():
             hour, minute = map(int, val.split(":"))
             return {"trigger": "cron", "hour": hour, "minute": minute}
         except ValueError:
-            print(f"Invalid UPDATE_INTERVAL format '{val}', defaulting to 24h")
+            logging.warning(f"Invalid UPDATE_INTERVAL format '{val}', defaulting to 24h")
             return {"trigger": "interval", "hours": 24}
 
     # Interval capability
@@ -48,5 +49,5 @@ def get_scheduler_trigger_args():
     except ValueError:
         pass
     
-    print(f"Invalid UPDATE_INTERVAL format '{val}', defaulting to 24h")
+    logging.warning(f"Invalid UPDATE_INTERVAL format '{val}', defaulting to 24h")
     return {"trigger": "interval", "hours": 24}
