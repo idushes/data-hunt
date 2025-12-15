@@ -43,4 +43,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8111
 
 # Command to run the application
-CMD ["gunicorn", "server:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8111", "--access-logfile", "-", "--error-logfile", "-"]
+CMD ["gunicorn", "server:app"]
