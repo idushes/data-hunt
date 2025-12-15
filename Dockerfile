@@ -38,6 +38,7 @@ COPY data.csv .
 # Set environment variables to use the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PORT=8111
+ENV PYTHONUNBUFFERED=1
 
 # Expose the port the app runs on
 EXPOSE 8111
