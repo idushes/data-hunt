@@ -22,6 +22,17 @@ async def lifespan(app: FastAPI):
         print("RUN_ON_STARTUP is True. Executing fetch task now...")
         await fetch_and_save_data()
 
+    # Run database migrations
+    print("Running database migrations...")
+    try:
+        from alembic import command
+        from alembic.config import Config
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+        print("Database migrations applied successfully.")
+    except Exception as e:
+        print(f"Error applying migrations: {e}")
+
     trigger_args = get_scheduler_trigger_args()
     
     scheduler = AsyncIOScheduler()

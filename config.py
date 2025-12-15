@@ -10,6 +10,7 @@ DEBANK_ACCESS_KEY = os.environ.get("DEBANK_ACCESS_KEY")
 UPDATE_INTERVAL = os.environ.get("UPDATE_INTERVAL", "24h")
 PORT = int(os.environ.get("PORT", 8111))
 RUN_ON_STARTUP = os.environ.get("RUN_ON_STARTUP", "false").lower() == "true"
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./data.db")
 
 def get_target_ids() -> List[str]:
     """Scans environment variables for keys starting with TARGET_ID_"""

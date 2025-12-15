@@ -30,7 +30,8 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy the application code
 # Copy the application code
-COPY server.py config.py tasks.py ./
+COPY server.py config.py tasks.py database.py models.py alembic.ini ./
+COPY alembic ./alembic
 COPY routers ./routers
 COPY data.csv .
 
