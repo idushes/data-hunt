@@ -21,17 +21,6 @@ async def lifespan(app: FastAPI):
     )
     logger = logging.getLogger(__name__)
 
-    # Startup logic
-    if not DEBANK_ACCESS_KEY:
-        logger.warning("DEBANK_ACCESS_KEY is not set in environment variables!")
-    
-    ids = get_target_ids()
-    logger.info(f"Scheduler configured. Target IDs: {ids}")
-
-    if RUN_ON_STARTUP:
-        logger.info("RUN_ON_STARTUP is True. Executing fetch task now...")
-        await fetch_and_save_data()
-
     # Run database migrations
     logger.info("Running database migrations...")
     try:
@@ -42,6 +31,17 @@ async def lifespan(app: FastAPI):
         logger.info("Database migrations applied successfully.")
     except Exception as e:
         logger.error(f"Error applying migrations: {e}")
+
+    # Startup logic
+    if not DEBANK_ACCESS_KEY:
+        logger.warning("DEBANK_ACCESS_KEY is not set in environment variables!")
+    
+    ids = get_target_ids()
+    logger.info(f"Scheduler configured. Target IDs: {ids}")
+
+    if RUN_ON_STARTUP:
+        logger.info("RUN_ON_STARTUP is True. Executing fetch task now...")
+        await fetch_and_save_data()
 
     trigger_args = get_scheduler_trigger_args()
     
