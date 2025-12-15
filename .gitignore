@@ -12,3 +12,4 @@ server.log
 data/
 data.csv
 .env
+.DS_Store

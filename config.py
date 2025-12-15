@@ -11,6 +11,10 @@ UPDATE_INTERVAL = os.environ.get("UPDATE_INTERVAL", "24h")
 PORT = int(os.environ.get("PORT", 8111))
 RUN_ON_STARTUP = os.environ.get("RUN_ON_STARTUP", "false").lower() == "true"
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./data.db")
+SECRET_KEY = os.environ.get("SECRET_KEY", "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 day by default
+
 
 def get_target_ids() -> List[str]:
     """Scans environment variables for keys starting with TARGET_ID_"""
