@@ -33,7 +33,6 @@ COPY --from=builder /app/.venv /app/.venv
 COPY server.py config.py tasks.py database.py models.py alembic.ini ./
 COPY alembic ./alembic
 COPY routers ./routers
-COPY data.csv .
 
 # Set environment variables to use the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
