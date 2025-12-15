@@ -87,7 +87,11 @@ app.add_middleware(
 app.include_router(debt_router)
 app.include_router(stability_router)
 app.include_router(pool_router)
+app.include_router(pool_router)
 app.include_router(auth_router)
+
+from routers.health import router as health_router
+app.include_router(health_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
