@@ -26,9 +26,13 @@ async def update_all_complex_protocol_list(
 ):
     """
     Updates the complex protocol list for all addresses linked to the authenticated user.
+    Requires account balance > 0.
     """
     if not account.addresses:
         raise HTTPException(status_code=400, detail="No addresses linked to this account")
+    
+    if account.balance <= 0:
+        raise HTTPException(status_code=403, detail="Insufficient access balance")
 
     # Extract addresses strictly from the account relationship
     addresses = [addr.address for addr in account.addresses]

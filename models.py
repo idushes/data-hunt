@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, ForeignKey, Integer
+from sqlalchemy import Column, String, Boolean, ForeignKey, Integer, Float
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -9,6 +9,7 @@ class Account(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     init_address = Column(String, nullable=False)
     init_address_network = Column(String, nullable=False)
+    balance = Column(Float, default=0.0)
 
     addresses = relationship("AccountAddress", back_populates="account")
 
