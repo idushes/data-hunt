@@ -40,70 +40,25 @@ async def update_all_complex_protocol_list(
     results = []
     
     async with httpx.AsyncClient() as client:
-        headers = {"AccessKey": DEBANK_ACCESS_KEY}
+        # Import inside function to avoid circular imports if any, or just at top if clean
+        from utils import fetch_debank_complex_protocols
         
         for address in addresses:
-            # Create pending request record
-            db_request = DebankRequest(
-                account_id=account.id, # Link to user
-                path="/v1/user/all_complex_protocol_list",
-                params=json.dumps({"id": address}),
-                status="pending",
-                created_at=int(time.time()),
-                response_json=None
-            )
-            db.add(db_request)
-            db.commit()
-            db.refresh(db_request)
+            result = await fetch_debank_complex_protocols(db, client, account.id, address)
             
-            try:
-                # Call Debank API
-                url = "https://pro-openapi.debank.com/v1/user/all_complex_protocol_list"
-                params = {"id": address}
+            # Clean up result for response (remove 'data' to save bandwidth if not needed, or keep it?)
+            # Router previously returned data_count but not full data in logic above? 
+            # Looking at previous implementation... it appended {"address", "status", "data_count"}
+            
+            summary = {
+                "address": result["address"],
+                "status": result["status"]
+            }
+            if "error" in result:
+                summary["error"] = result["error"]
+            if "data_count" in result:
+                summary["data_count"] = result["data_count"]
                 
-                start_time = time.time()
-                response = await client.get(url, params=params, headers=headers)
-                end_time = time.time()
-                
-                # Check if successful
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    # Update DB record
-                    db_request.status = "success"
-                    db_request.response_json = json.dumps(data)
-                    # Heuristic cost: Debank calls usually have a cost, but we might not know it from headers effortlessly unless we parse them.
-                    # For now keep cost null or 0.
-                    
-                    db.commit()
-                    
-                    results.append({
-                        "address": address,
-                        "status": "success",
-                        "data_count": len(data) if isinstance(data, list) else 0
-                    })
-                else:
-                    error_msg = response.text
-                    db_request.status = "error"
-                    db_request.response_json = error_msg
-                    db.commit()
-                    
-                    results.append({
-                        "address": address,
-                        "status": "error",
-                        "error": f"Debank API Error: {response.status_code}"
-                    })
-
-            except Exception as e:
-                logger.error(f"Error fetching data for {address}: {e}")
-                db_request.status = "error"
-                db_request.response_json = str(e)
-                db.commit()
-                
-                results.append({
-                    "address": address,
-                    "status": "error",
-                    "error": str(e)
-                })
+            results.append(summary)
 
     return {"results": results}

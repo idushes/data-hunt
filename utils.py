@@ -103,3 +103,67 @@ def get_latest_debank_data(db: Session, account_id: str, valid_addresses: List[s
             
     # Return list of (address, data)
     return list(unique_data.items())
+
+import httpx
+from typing import Optional
+from config import DEBANK_ACCESS_KEY
+
+async def fetch_debank_complex_protocols(db: Session, client: httpx.AsyncClient, account_id: str, address: str) -> dict:
+    """
+    Fetches complex protocol list from Debank for a given address.
+    Handles DB logging (pending -> success/error).
+    Returns a result dict with status and data/error.
+    """
+    # Create Pending Request
+    db_request = DebankRequest(
+        account_id=account_id,
+        path="/v1/user/all_complex_protocol_list",
+        params=json.dumps({"id": address}),
+        status="pending",
+        created_at=int(time.time()),
+        response_json=None
+    )
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    
+    url = "https://pro-openapi.debank.com/v1/user/all_complex_protocol_list"
+    params = {"id": address}
+    headers = {"AccessKey": DEBANK_ACCESS_KEY}
+    
+    try:
+        response = await client.get(url, params=params, headers=headers)
+        
+        if response.status_code == 200:
+            data = response.json()
+            db_request.status = "success"
+            db_request.response_json = json.dumps(data)
+            db.commit()
+            return {
+                "address": address,
+                "status": "success",
+                "data_count": len(data) if isinstance(data, list) else 0,
+                "data": data
+            }
+        else:
+            error_msg = response.text
+            db_request.status = "error"
+            db_request.response_json = error_msg
+            db.commit()
+            return {
+                "address": address,
+                "status": "error",
+                "error": f"Debank API Error: {response.status_code}",
+                "response": error_msg
+            }
+            
+    except Exception as e:
+        logger.error(f"Error fetching data for {address}: {e}")
+        db_request.status = "error"
+        db_request.response_json = str(e)
+        db.commit()
+        return {
+            "address": address,
+            "status": "error",
+            "error": str(e)
+        }

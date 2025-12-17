@@ -1,8 +1,12 @@
 import os
 import json
 import httpx
+import time
 from datetime import datetime
-from config import DEBANK_ACCESS_KEY, get_target_ids
+from sqlalchemy.orm import Session
+from database import SessionLocal
+from models import Account, DebankRequest
+from config import DEBANK_ACCESS_KEY
 
 import logging
 
@@ -15,35 +19,54 @@ async def fetch_and_save_data():
         logger.error("Error: DEBANK_ACCESS_KEY is missing!")
         return
 
-    target_ids = get_target_ids()
-    if not target_ids:
-        logger.warning("Warning: No target IDs found (ENV keys starting with TARGET_ID_)")
-        return
-
-    async with httpx.AsyncClient() as client:
-        headers = {"AccessKey": DEBANK_ACCESS_KEY}
+    db: Session = SessionLocal()
+    try:
+        # 1. Get solvent accounts
+        accounts = db.query(Account).filter(Account.balance > 0).all()
         
-        for user_id in target_ids:
-            try:
-                url = "https://pro-openapi.debank.com/v1/user/all_complex_protocol_list"
-                params = {"id": user_id}
-                
-                logger.info(f"Fetching data for {user_id}...")
-                response = await client.get(url, params=params, headers=headers)
-                response.raise_for_status()
-                
-                data = response.json()
-                
-                # Ensure directory exists
-                os.makedirs("data", exist_ok=True)
-                
-                file_path = f"data/{user_id}.json"
-                with open(file_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                
-                logger.info(f"Saved data to {file_path}")
-                
-            except Exception as e:
-                logger.error(f"Failed to fetch data for {user_id}: {str(e)}")
+        if not accounts:
+            logger.info("No accounts with positive balance found. Skipping update.")
+            return
+            
+        logger.info(f"Found {len(accounts)} solvent accounts.")
+        
+        # 2. Collect all unique addresses to update
+        # We need to map address -> account_id to log correctly later?
+        # Actually, an address might belong to multiple accounts (in theory, though usually 1-to-1 or 1-to-many unique)
+        # But if we update per address, we can log it with the associated account(s).
+        # Simplest approach: Iterate accounts -> addresses. Duplicate checks for efficiency?
+        # If multiple accounts have same address, we update it once or twice? 
+        # Debank limits are strict. Ideally we update each unique address once.
+        # But we need to link the request to the account_id.
+        # Let's iterate accounts and their addresses.
+        
+
+        async with httpx.AsyncClient() as client:
+            from utils import fetch_debank_complex_protocols
+
+            for account in accounts:
+                if not account.addresses:
+                    continue
+                    
+                for addr_obj in account.addresses:
+                    address = addr_obj.address
+                    
+                    try:
+                        logger.info(f"Fetching data for {address} (Account {account.id})...")
+                        
+                        result = await fetch_debank_complex_protocols(db, client, account.id, address)
+                        
+                        if result["status"] == "success":
+                            logger.info(f"Success: {address}")
+                        else:
+                            logger.error(f"Error fetching {address}: {result.get('error')}")
+
+                    except Exception as e:
+                        logger.error(f"Exception fetching {address}: {str(e)}")
+    
+    except Exception as e:
+        logger.error(f"Task Failed: {e}")
+    finally:
+        db.close()
     
     logger.info(f"[{datetime.now()}] Data fetch task completed.")
