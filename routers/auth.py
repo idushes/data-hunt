@@ -45,6 +45,8 @@ class TokenInfo(BaseModel):
     created_at: int
     is_active: bool
 
+from utils import get_valid_chain_ids
+
 @router.post("/login", response_model=TokenResponse, summary="Web3 Login / Registration", description="Authenticates a user via Web3 signature. Creates a new account if the address is not found and no other account has authorized it. Returns a JWT access token containing the authenticated address.")
 async def login(data: SignatureVerification, db: Session = Depends(get_db)):
     try:
@@ -63,7 +65,7 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
         # Check if address exists
         account_addr = db.query(AccountAddress).filter(AccountAddress.address == recovered_address.lower()).first()
         
-        network = "ethereum" # Defaulting for now as we don't strictly require it in login payload from client yet, or we assume eth.
+        network = "eth" # Default to 'eth' to match ID in chain list
 
         if account_addr:
             if not account_addr.can_auth:
@@ -160,12 +162,20 @@ class AddressInfo(BaseModel):
     network: str
     can_auth: bool
 
-@router.post("/addresses", response_model=AddressInfo, summary="Add Secondary Address", description="Links a new Web3 address to the current account. The new address is initially disabled for authentication (`can_auth=False`).")
+@router.post("/addresses", response_model=AddressInfo, summary="Add Secondary Address", description="Links a new Web3 address to the current account. The new address is initially disabled for authentication (`can_auth=False`).\n\n**Validation:** `network` must be a valid Chain ID from `/chains` (e.g. 'eth', 'bsc', 'matic').")
 async def add_address(
     request: AddAddressRequest,
     account: Account = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
+    # Validate Network
+    valid_chains = get_valid_chain_ids()
+    if request.network not in valid_chains:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid network '{request.network}'. Please use a valid chain ID from /chains."
+        )
+
     # Check if address already exists for this account
     existing = db.query(AccountAddress).filter(
         AccountAddress.account_id == account.id,
