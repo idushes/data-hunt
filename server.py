@@ -76,12 +76,12 @@ from routers.chains import router as chains_router
 from fastapi.middleware.cors import CORSMiddleware
 
 import json
+from utils import load_chains
 
 def get_description_with_chains():
     base_desc = "API for Data Hunt project."
     try:
-        with open("docs/debank_chain_list.json", "r") as f:
-            chains = json.load(f)
+        chains = load_chains()
         
         chain_table = "\n\n## Available Chains\n\n| ID | Name | Community ID |\n|:---|:---|:---|\n"
         for chain in chains:
