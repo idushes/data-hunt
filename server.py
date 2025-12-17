@@ -72,6 +72,7 @@ from routers.stability import router as stability_router
 from routers.pool import router as pool_router
 from routers.auth import router as auth_router
 from routers.chains import router as chains_router
+from routers.debank import router as debank_router
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -105,6 +106,7 @@ app.add_middleware(
 app.include_router(debt_router)
 app.include_router(stability_router)
 app.include_router(pool_router)
+app.include_router(debank_router)
 
 app.include_router(auth_router)
 app.include_router(chains_router)

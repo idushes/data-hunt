@@ -32,9 +32,18 @@ class AccountToken(Base):
     created_at = Column(Integer, nullable=False) # store as timestamp
     is_active = Column(Boolean, default=True)
 
-    # We might want a relationship back to account, but not strictly necessary for the prompt's specific requirements unless we access tokens from account. 
-    # Let's add it for completeness if we want to cascade deletes, but for now simple FK is enough. 
-    # actually, `created_at` as Integer (unix timestamp) is often easier, or DateTime. 
-    # server.py implies we use standard python mostly. Let's use BigInteger or similar if we want. 
     # But for compatibility with JWT `iat`, Integer (seconds) is fine.
+
+
+class DebankRequest(Base):
+    __tablename__ = "debank_request"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    account_id = Column(String, index=True, nullable=True) # Optional: if linked to a specific user
+    path = Column(String, nullable=False)
+    params = Column(String, nullable=True) # JSON string of params (e.g. addressed)
+    response_json = Column(String, nullable=True) # TEXT or Large String
+    status = Column(String, default="pending") # success, error, pending
+    cost = Column(Integer, nullable=True) # Cost of query, if we want to track
+    created_at = Column(Integer, nullable=False)
 
