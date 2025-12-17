@@ -7,10 +7,22 @@ from database import get_db
 from models import AccountToken, Account
 import time
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
-async def get_current_token_payload(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
-    token = credentials.credentials
+async def get_current_token_payload(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    token: str = None
+) -> dict:
+    if credentials:
+        token = credentials.credentials
+    elif token:
+        token = token
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
