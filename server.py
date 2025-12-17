@@ -71,10 +71,28 @@ from routers.debt import router as debt_router
 from routers.stability import router as stability_router
 from routers.pool import router as pool_router
 from routers.auth import router as auth_router
+from routers.chains import router as chains_router
 
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(lifespan=lifespan)
+import json
+
+def get_description_with_chains():
+    base_desc = "API for Data Hunt project."
+    try:
+        with open("docs/debank_chain_list.json", "r") as f:
+            chains = json.load(f)
+        
+        chain_table = "\n\n## Available Chains\n\n| ID | Name | Community ID |\n|:---|:---|:---|\n"
+        for chain in chains:
+            chain_table += f"| `{chain.get('id')}` | {chain.get('name')} | {chain.get('community_id')} |\n"
+        
+        return base_desc + chain_table
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Failed to load chain list for docs: {e}")
+        return base_desc
+
+app = FastAPI(lifespan=lifespan, title="Data Hunt API", description=get_description_with_chains())
 
 app.add_middleware(
     CORSMiddleware,
@@ -89,6 +107,7 @@ app.include_router(stability_router)
 app.include_router(pool_router)
 
 app.include_router(auth_router)
+app.include_router(chains_router)
 
 from routers.health import router as health_router
 app.include_router(health_router)
