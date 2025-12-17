@@ -1,6 +1,5 @@
-from typing import Optional
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 from sqlalchemy.orm import Session
 from config import SECRET_KEY, ALGORITHM
@@ -8,9 +7,10 @@ from database import get_db
 from models import AccountToken, Account
 import time
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="web3/login") # Using the planned login route, though actually it's a signature verification flow.
+security = HTTPBearer()
 
-async def get_current_token_payload(token: str = Depends(oauth2_scheme)) -> dict:
+async def get_current_token_payload(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    token = credentials.credentials
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
