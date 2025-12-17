@@ -42,7 +42,7 @@ async def fetch_and_save_data():
         
 
         async with httpx.AsyncClient() as client:
-            from utils import fetch_debank_complex_protocols
+            from utils import fetch_debank_complex_protocols, fetch_debank_token_list
 
             for account in accounts:
                 if not account.addresses:
@@ -54,12 +54,21 @@ async def fetch_and_save_data():
                     try:
                         logger.info(f"Fetching data for {address} (Account {account.id})...")
                         
-                        result = await fetch_debank_complex_protocols(db, client, account.id, address)
+                        # 1. Fetch Complex Protocol List
+                        result_complex = await fetch_debank_complex_protocols(db, client, account.id, address)
                         
-                        if result["status"] == "success":
-                            logger.info(f"Success: {address}")
+                        if result_complex["status"] == "success":
+                            logger.info(f"Success (Complex): {address}")
                         else:
-                            logger.error(f"Error fetching {address}: {result.get('error')}")
+                            logger.error(f"Error fetching complex protocols for {address}: {result_complex.get('error')}")
+
+                        # 2. Fetch Token List
+                        result_token = await fetch_debank_token_list(db, client, account.id, address)
+
+                        if result_token["status"] == "success":
+                            logger.info(f"Success (Token List): {address}")
+                        else:
+                            logger.error(f"Error fetching token list for {address}: {result_token.get('error')}")
 
                     except Exception as e:
                         logger.error(f"Exception fetching {address}: {str(e)}")
