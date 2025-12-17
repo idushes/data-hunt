@@ -45,7 +45,7 @@ class TokenInfo(BaseModel):
     created_at: int
     is_active: bool
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, summary="Web3 Login / Registration", description="Authenticates a user via Web3 signature. Creates a new account if the address is not found and no other account has authorized it. Returns a JWT access token containing the authenticated address.")
 async def login(data: SignatureVerification, db: Session = Depends(get_db)):
     try:
         # Encode the message as required by EIP-191
@@ -63,19 +63,18 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
         # Check if address exists
         account_addr = db.query(AccountAddress).filter(AccountAddress.address == recovered_address.lower()).first()
         
+        network = "ethereum" # Defaulting for now as we don't strictly require it in login payload from client yet, or we assume eth.
+
         if account_addr:
+            if not account_addr.can_auth:
+                raise HTTPException(status_code=403, detail="Address not authorized for login")
             account = account_addr.account
+            network = account_addr.network
         else:
             # Create new account
-            # Assumption: First login with this address creates an account.
-            # We don't have network info in request, assuming 'ethereum' or just storing what we have? 
-            # Models say: init_address_network is nullable=False.
-            # We should probably ask client for network, but for now let's default to 'unknown' or just ignore if strict. 
-            # Prompt didn't specify registration, but "authorize via web3". 
-            # I will default network to 'ethereum' for now to satisfy model constraint.
             account = Account(
                 init_address=recovered_address.lower(),
-                init_address_network="ethereum" 
+                init_address_network=network 
             )
             db.add(account)
             db.commit() # Commit to get ID
@@ -83,7 +82,7 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
             account_addr = AccountAddress(
                 account_id=account.id,
                 address=recovered_address.lower(),
-                network="ethereum",
+                network=network,
                 can_auth=True
             )
             db.add(account_addr)
@@ -99,9 +98,14 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(new_token)
 
-        # Generate JWT
+        # Generate JWT with address claim
         access_token = create_access_token(
-            data={"sub": account.id, "jti": new_token.id}
+            data={
+                "sub": account.id, 
+                "jti": new_token.id,
+                "address": recovered_address.lower(),
+                "network": network
+            }
         )
 
         return {"access_token": access_token, "token_type": "bearer"}
@@ -109,10 +113,9 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"Login Failed: Exception occurred: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/logout")
+@router.post("/logout", summary="Logout", description="Revokes the current access token.")
 async def logout(
     current_token_id: str = Depends(get_current_token_id),
     db: Session = Depends(get_db),
@@ -124,7 +127,7 @@ async def logout(
         db.commit()
     return {"message": "Logged out successfully"}
 
-@router.get("/tokens", response_model=List[TokenInfo])
+@router.get("/tokens", response_model=List[TokenInfo], summary="List Active Sessions", description="Returns a list of all active sessions (tokens) for the current account.")
 async def list_tokens(
     current_token_id: str = Depends(get_current_token_id),
     account: Account = Depends(get_current_account),
@@ -145,7 +148,132 @@ async def list_tokens(
         for t in tokens
     ]
 
-@router.post("/deactivate")
+# New Address Management Endpoints
+
+class AddAddressRequest(BaseModel):
+    address: str
+    network: str
+
+class AddressInfo(BaseModel):
+    id: int
+    address: str
+    network: str
+    can_auth: bool
+
+@router.post("/addresses", response_model=AddressInfo, summary="Add Secondary Address", description="Links a new Web3 address to the current account. The new address is initially disabled for authentication (`can_auth=False`).")
+async def add_address(
+    request: AddAddressRequest,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db)
+):
+    # Check if address already exists for this account
+    existing = db.query(AccountAddress).filter(
+        AccountAddress.account_id == account.id,
+        AccountAddress.address == request.address.lower()
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Address already linked to this account")
+
+    # We do NOT check if address exists on OTHER accounts here. 
+    # It allows observing an address on multiple accounts, but only one can have 'can_auth=True' (enforced in toggle_auth)
+    
+    new_addr = AccountAddress(
+        account_id=account.id,
+        address=request.address.lower(),
+        network=request.network,
+        can_auth=False 
+    )
+    db.add(new_addr)
+    db.commit()
+    db.refresh(new_addr)
+    
+    return AddressInfo(
+        id=new_addr.id,
+        address=new_addr.address,
+        network=new_addr.network,
+        can_auth=new_addr.can_auth
+    )
+
+@router.get("/addresses", response_model=List[AddressInfo], summary="List Linked Addresses", description="Returns all Web3 addresses linked to the current account.")
+async def get_addresses(
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db)
+):
+    addrs = db.query(AccountAddress).filter(AccountAddress.account_id == account.id).all()
+    return [
+        AddressInfo(
+            id=a.id,
+            address=a.address,
+            network=a.network,
+            can_auth=a.can_auth
+        ) for a in addrs
+    ]
+
+class AuthToggleRequest(BaseModel):
+    enable: bool
+    signature: Optional[str] = None
+    message: Optional[str] = None
+
+from dependencies import get_current_token_payload
+
+@router.post("/addresses/{address}/auth", summary="Toggle Address Authorization", description="Enables or disables login authorization for a linked address. Enabling requires a valid signature to prove ownership. Disabling is prevented if it's the current session's address.")
+async def toggle_address_auth(
+    address: str,
+    request: AuthToggleRequest,
+    account: Account = Depends(get_current_account),
+    token_payload: dict = Depends(get_current_token_payload),
+    db: Session = Depends(get_db)
+):
+    target_addr = db.query(AccountAddress).filter(
+        AccountAddress.account_id == account.id,
+        AccountAddress.address == address.lower()
+    ).first()
+
+    if not target_addr:
+        raise HTTPException(status_code=404, detail="Address not found on this account")
+
+    if request.enable:
+        # Verify ownership
+        if not request.signature or not request.message:
+             raise HTTPException(status_code=400, detail="Signature and message required to enable auth")
+        
+        try:
+            encoded_message = encode_defunct(text=request.message)
+            recovered_address = EthAccount.recover_message(encoded_message, signature=request.signature)
+            
+            if recovered_address.lower() != address.lower():
+                raise HTTPException(status_code=400, detail="Signature invalid for this address")
+                
+        except Exception:
+            raise HTTPException(status_code=400, detail="Signature verification failed")
+
+        # Check collision: ensure no other account has this address with can_auth=True
+        # Note: It IS allowed to have the same address authorized on the SAME account (if we had copies), but strictly unique across accounts for auth
+        collision = db.query(AccountAddress).filter(
+            AccountAddress.address == address.lower(),
+            AccountAddress.can_auth == True,
+            AccountAddress.account_id != account.id
+        ).first()
+        
+        if collision:
+            raise HTTPException(status_code=409, detail="Address is active on another account")
+            
+        target_addr.can_auth = True
+        
+    else:
+        # Disable auth
+        # Safety check: Do not allow disabling the address we are currently logged in with
+        current_login_address = token_payload.get("address")
+        if current_login_address and current_login_address.lower() == address.lower():
+            raise HTTPException(status_code=400, detail="Cannot disable authorization for the current session address")
+            
+        target_addr.can_auth = False
+
+    db.commit()
+    return {"message": "Authorization status updated", "can_auth": target_addr.can_auth}
+
+@router.post("/deactivate", summary="Deactivate Token", description="Deactivates a specific access token. This is useful for remote logout or invalidating a compromised session.")
 async def deactivate_token(
     request: DeactivateTokenRequest,
     account: Account = Depends(get_current_account),
