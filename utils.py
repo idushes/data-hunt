@@ -42,3 +42,64 @@ def get_valid_chain_ids() -> Set[str]:
     chains = load_chains()
     _valid_chain_ids_cache = {chain.get("id") for chain in chains if chain.get("id")}
     return _valid_chain_ids_cache
+
+from sqlalchemy.orm import Session
+from models import DebankRequest
+
+import time
+
+def get_latest_debank_data(db: Session, account_id: str, valid_addresses: List[str] = None) -> List[tuple]:
+    """
+    Fetches the latest successful Debank API response for each address linked to the account.
+    Returns a list of tuples: (address, data_json).
+    Only considers requests from the last 7 days.
+    If valid_addresses is provided, filters results to only include these addresses.
+    """
+    # 7 days in seconds
+    seven_days_ago = int(time.time() - (7 * 24 * 60 * 60))
+
+    # Fetch all successful requests for this account within last 7 days
+    # Ordered by Created At DESC (Newest First)
+    # This ensures that when we iterate, we encounter the MOST RECENT data for an address first.
+    requests = db.query(DebankRequest).filter(
+        DebankRequest.account_id == account_id,
+        DebankRequest.status == "success",
+        DebankRequest.path == "/v1/user/all_complex_protocol_list",
+        DebankRequest.created_at >= seven_days_ago
+    ).order_by(DebankRequest.created_at.desc()).all()
+    
+    # Normalize valid_addresses for comparison
+    valid_addresses_set = set(a.lower() for a in valid_addresses) if valid_addresses else None
+    
+    # Deduplicate by address found in params
+    unique_data = {}
+    
+    for req in requests:
+        try:
+            if not req.params:
+                continue
+            params = json.loads(req.params)
+            address = params.get("id")
+            if not address:
+                continue
+            
+            # Normalize address
+            address = address.lower()
+            
+            # Filter by known active addresses
+            if valid_addresses_set is not None and address not in valid_addresses_set:
+                continue
+            
+            # If we haven't seen this address yet, it's the NEWEST one (due to DESC sorting).
+            # Save it and ignore subsequent (older) entries for this address.
+            if address not in unique_data:
+                # Parse response
+                if req.response_json:
+                    data = json.loads(req.response_json)
+                    unique_data[address] = data
+        except Exception as e:
+            logger.error(f"Error parsing request {req.id}: {e}")
+            continue
+            
+    # Return list of (address, data)
+    return list(unique_data.items())
