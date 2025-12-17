@@ -8,21 +8,20 @@ router = APIRouter(
     tags=["health"]
 )
 
-@router.get("/liveness")
+@router.get(
+    "/liveness",
+    summary="Liveness Probe",
+    description="K8s liveness probe. Returns 200 OK if the service is running."
+)
 def liveness():
-    """
-    K8s liveness probe.
-    Returns 200 OK if the service is running.
-    """
     return {"status": "ok"}
 
-@router.get("/readiness")
+@router.get(
+    "/readiness",
+    summary="Readiness Probe",
+    description="K8s readiness probe. Checks database connectivity. Returns 200 OK if DB is reachable, 503 otherwise."
+)
 def readiness(db: Session = Depends(get_db)):
-    """
-    K8s readiness probe.
-    Checks database connectivity.
-    Returns 200 OK if DB is reachable, 503 otherwise.
-    """
     try:
         # Simple query to check DB connection
         db.execute(text("SELECT 1"))

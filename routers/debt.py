@@ -8,7 +8,17 @@ from fastapi.responses import Response
 
 router = APIRouter()
 
-@router.get("/debt")
+@router.get(
+    "/debt",
+    summary="Export Debt Data",
+    description="Generates a CSV export of debt data for all tracked addresses.\n\nColumns: `id`, `amount`, `symbol`, `health_rate`, `reward`, `supply_amount`, `supply_symbol`.",
+    responses={
+        200: {
+            "content": {"text/csv": {}},
+            "description": "CSV file containing debt data.",
+        }
+    },
+)
 async def get_debt():
     # Columns: id, amount, symbol, health_rate, reward, supply_amount, supply_symbol
     output = io.StringIO()

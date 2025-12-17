@@ -8,7 +8,17 @@ from fastapi.responses import Response
 
 router = APIRouter()
 
-@router.get("/pool")
+@router.get(
+    "/pool",
+    summary="Export Liquidity Pool Data",
+    description="Generates a CSV export of liquidity pool positions for all tracked addresses.\n\nColumns: `id`, `symbol_1`, `amount_1`, `symbol_2`, `amount_2`, `reward_symbol_1`, `reward_amount_1`, `reward_symbol_2`, `reward_amount_2`.",
+    responses={
+        200: {
+            "content": {"text/csv": {}},
+            "description": "CSV file containing pool data.",
+        }
+    },
+)
 async def get_pool():
     # Columns: id, symbol_1, amount_1, symbol_2, amount_2
     output = io.StringIO()

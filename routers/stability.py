@@ -8,7 +8,17 @@ from fastapi.responses import Response
 
 router = APIRouter()
 
-@router.get("/stability")
+@router.get(
+    "/stability",
+    summary="Export Stability Data",
+    description="Generates a CSV export of stability metrics (asset USD value) for all tracked addresses.\n\nColumns: `id`, `asset_usd_value`.",
+    responses={
+        200: {
+            "content": {"text/csv": {}},
+            "description": "CSV file containing stability data.",
+        }
+    },
+)
 async def get_stability():
     # Columns: id, asset_usd_value
     output = io.StringIO()
