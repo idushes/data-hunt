@@ -48,7 +48,7 @@ from models import DebankRequest
 
 import time
 
-def get_latest_debank_data(db: Session, account_id: str, valid_addresses: List[str] = None) -> List[tuple]:
+def get_latest_debank_data(db: Session, account_id: str, valid_addresses: List[str] = None, path: str = "/v1/user/all_complex_protocol_list") -> List[tuple]:
     """
     Fetches the latest successful Debank API response for each address linked to the account.
     Returns a list of tuples: (address, data_json).
@@ -64,7 +64,7 @@ def get_latest_debank_data(db: Session, account_id: str, valid_addresses: List[s
     requests = db.query(DebankRequest).filter(
         DebankRequest.account_id == account_id,
         DebankRequest.status == "success",
-        DebankRequest.path == "/v1/user/all_complex_protocol_list",
+        DebankRequest.path == path,
         DebankRequest.created_at >= seven_days_ago
     ).order_by(DebankRequest.created_at.desc()).all()
     
