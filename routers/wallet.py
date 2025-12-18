@@ -30,6 +30,8 @@ async def get_wallet(
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["id", "symbol", "amount", "price", "usd_value"])
+    
+    rows = []
 
     # Extract active addresses
     valid_addresses = [addr.address.lower() for addr in account.addresses] if account.addresses else []
@@ -61,6 +63,12 @@ async def get_wallet(
                 symbol_lower = symbol.lower()
                 combined_id = f"{address_short}-{chain}-{symbol_lower}"
                 
-                writer.writerow([combined_id, symbol, amount, price, usd_value])
+                rows.append([combined_id, symbol, amount, price, usd_value])
+
+    # Sort rows by usd_value (index 4) descending
+    rows.sort(key=lambda x: x[4], reverse=True)
+
+    for row in rows:
+        writer.writerow(row)
 
     return Response(content=output.getvalue(), media_type="text/csv")
