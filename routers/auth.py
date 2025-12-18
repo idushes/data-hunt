@@ -62,14 +62,15 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
              raise HTTPException(status_code=400, detail="Invalid signature or address mismatch")
 
         # Find or Create Account
-        # Check if address exists
-        account_addr = db.query(AccountAddress).filter(AccountAddress.address == recovered_address.lower()).first()
+        # Check if address exists AND is authorized for login
+        account_addr = db.query(AccountAddress).filter(
+            AccountAddress.address == recovered_address.lower(),
+            AccountAddress.can_auth == True
+        ).first()
         
         network = "eth" # Default to 'eth' to match ID in chain list
 
         if account_addr:
-            if not account_addr.can_auth:
-                raise HTTPException(status_code=403, detail="Address not authorized for login")
             account = account_addr.account
             network = account_addr.network
         else:
