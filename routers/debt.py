@@ -81,6 +81,9 @@ async def get_debt(
                         combined_id = f"{address_short}-{protocol_id}-{chain}"
                         if supply_symbol_lower:
                             combined_id += f"-{supply_symbol_lower}"
+                        
+                        if symbol:
+                            combined_id += f"-{symbol.lower()}"
                             
                         writer.writerow([combined_id, amount, symbol, health_rate, reward_usd, supply_amount, supply_symbol])
 
