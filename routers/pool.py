@@ -81,7 +81,7 @@ async def get_pool(
                             reward_amount_2 = reward_token_list[1].get("amount", 0)
 
                         # Construct ID: {address_short}-{protocol_id}-{chain}
-                        combined_id = f"{address_short}-{protocol_id}-{chain}"
+                        combined_id = f"{address_short}-{protocol_id}-{chain}-{symbol_1.lower()}-{symbol_2.lower()}"
                         
                         writer.writerow([combined_id, symbol_1, amount_1, symbol_2, amount_2, reward_symbol_1, reward_amount_1, reward_symbol_2, reward_amount_2])
 
