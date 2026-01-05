@@ -48,3 +48,12 @@ class DebankRequest(Base):
     cost = Column(Integer, nullable=True) # Cost of query, if we want to track
     created_at = Column(Integer, nullable=False)
 
+
+class ProjectDict(Base):
+    __tablename__ = "project_dict"
+
+    id = Column(String, primary_key=True, unique=True) # e.g. "cowswap"
+    chain = Column(String, nullable=True) # e.g. "eth"
+    logo_url = Column(String, nullable=True)
+    name = Column(String, nullable=True)
+    site_url = Column(String, nullable=True)
