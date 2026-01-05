@@ -105,4 +105,5 @@ class AddressHistory(Base):
     chain = Column(String, primary_key=True) # chain id
     cate_id = Column(String, nullable=True) # call type
     time_at = Column(Integer, nullable=True)
+    is_scam = Column(Boolean, default=False)
     json = Column(JSONB, nullable=True)
