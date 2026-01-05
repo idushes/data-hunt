@@ -81,3 +81,17 @@ class TokenDict(Base):
     credit_score = Column(Float, nullable=True)
     total_supply = Column(Float, nullable=True)
     time_at = Column(Float, nullable=True) # Timestamp. Float to handle "1543095952.0"
+
+
+class CEXDict(Base):
+    __tablename__ = "cex_dict"
+
+    id = Column(String, primary_key=True) # address string, e.g. "0x..."
+    cex_id = Column(String, nullable=False) # e.g. "coinbase"
+    name = Column(String, nullable=True)
+    logo_url = Column(String, nullable=True)
+    is_deposit = Column(Boolean, nullable=True)
+    is_collect = Column(Boolean, nullable=True)
+    is_gastopup = Column(Boolean, nullable=True)
+    is_vault = Column(Boolean, nullable=True)
+    is_withdraw = Column(Boolean, nullable=True)
