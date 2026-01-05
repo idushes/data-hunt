@@ -57,3 +57,27 @@ class ProjectDict(Base):
     logo_url = Column(String, nullable=True)
     name = Column(String, nullable=True)
     site_url = Column(String, nullable=True)
+
+
+class TokenDict(Base):
+    __tablename__ = "token_dict"
+
+    id = Column(String, primary_key=True) # The address of the token contract
+    chain = Column(String, nullable=False) # The chain's name
+    name = Column(String, nullable=True)
+    symbol = Column(String, nullable=True)
+    display_symbol = Column(String, nullable=True)
+    optimized_symbol = Column(String, nullable=True) # optimized_symbol || display_symbol || symbol
+    decimals = Column(Integer, nullable=True)
+    logo_url = Column(String, nullable=True)
+    protocol_id = Column(String, nullable=True)
+    price = Column(Float, default=0.0) # USD price. Price of 0 means no data.
+    price_24h_change = Column(Float, nullable=True)
+    is_verified = Column(Boolean, nullable=True)
+    is_core = Column(Boolean, nullable=True)
+    is_wallet = Column(Boolean, nullable=True)
+    is_scam = Column(Boolean, nullable=True)
+    is_suspicious = Column(Boolean, nullable=True)
+    credit_score = Column(Float, nullable=True)
+    total_supply = Column(Float, nullable=True)
+    time_at = Column(Float, nullable=True) # Timestamp. Float to handle "1543095952.0"
