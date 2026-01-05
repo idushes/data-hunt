@@ -1,5 +1,6 @@
 import uuid
 from sqlalchemy import Column, String, Boolean, ForeignKey, Integer, Float
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -95,3 +96,13 @@ class CEXDict(Base):
     is_gastopup = Column(Boolean, nullable=True)
     is_vault = Column(Boolean, nullable=True)
     is_withdraw = Column(Boolean, nullable=True)
+
+
+class AddressHistory(Base):
+    __tablename__ = "address_history"
+
+    id = Column(String, primary_key=True) # transaction hash
+    chain = Column(String, primary_key=True) # chain id
+    cate_id = Column(String, nullable=True) # call type
+    time_at = Column(Integer, nullable=True)
+    json = Column(JSONB, nullable=True)
