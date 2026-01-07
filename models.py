@@ -103,6 +103,7 @@ class AddressHistory(Base):
 
     id = Column(String, primary_key=True) # transaction hash
     chain = Column(String, primary_key=True) # chain id
+    address = Column(String, primary_key=True) # owner address
     cate_id = Column(String, nullable=True) # call type
     time_at = Column(Integer, nullable=True)
     is_scam = Column(Boolean, default=False)
