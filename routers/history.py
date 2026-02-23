@@ -27,8 +27,8 @@ class TokenAmount(BaseModel):
     logo_url: Optional[str] = None
     amount: float
     amount_raw: float # The raw amount (unsigned)
-    value_usd: float
-    price: float
+    value_usd: Optional[float] = None
+    price: Optional[float] = None
 
 class ReadableHistoryItem(BaseModel):
     tx_hash: str
@@ -361,20 +361,20 @@ async def get_readable_history(
              cex_map = {c.id.lower(): c for c in cex_objs}
 
         # Helper to hydrate token
-        def get_token_info(tid, amount):
+        def get_token_info(tid, amount, historical_price=None):
             t = tokens.get(tid)
             symbol = "???"
             name = "Unknown"
             logo = None
-            price = 0.0
             
             if t:
                 symbol = t.optimized_symbol or t.display_symbol or t.symbol or "???"
                 name = t.name or symbol
                 logo = t.logo_url
-                price = float(t.price) if t.price else 0.0
             
-            val = amount * price
+            # Only use historical price from raw JSON, don't fall back to current price
+            price = float(historical_price) if historical_price is not None else None
+            val = (amount * price) if price is not None else None
             return TokenAmount(
                 token_id=tid,
                 symbol=symbol,
@@ -415,16 +415,16 @@ async def get_readable_history(
             # Sends (Negative amount)
             sent_value = 0.0
             for s in sends:
-                t_obj = get_token_info(s.get("token_id"), -s.get("amount", 0))
+                t_obj = get_token_info(s.get("token_id"), -s.get("amount", 0), s.get("price"))
                 token_changes.append(t_obj)
-                sent_value += abs(t_obj.value_usd)
+                sent_value += abs(t_obj.value_usd) if t_obj.value_usd is not None else 0.0
                 
             # Receives (Positive amount)
             recv_value = 0.0
             for r in receives:
-                t_obj = get_token_info(r.get("token_id"), r.get("amount", 0))
+                t_obj = get_token_info(r.get("token_id"), r.get("amount", 0), r.get("price"))
                 token_changes.append(t_obj)
-                recv_value += abs(t_obj.value_usd)
+                recv_value += abs(t_obj.value_usd) if t_obj.value_usd is not None else 0.0
             
             # Value Filter
             if (sent_value + recv_value) < min_value_usd:
