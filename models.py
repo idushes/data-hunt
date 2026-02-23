@@ -72,8 +72,7 @@ class TokenDict(Base):
     decimals = Column(Integer, nullable=True)
     logo_url = Column(String, nullable=True)
     protocol_id = Column(String, nullable=True)
-    price = Column(Float, default=0.0) # USD price. Price of 0 means no data.
-    price_24h_change = Column(Float, nullable=True)
+
     is_verified = Column(Boolean, nullable=True)
     is_core = Column(Boolean, nullable=True)
     is_wallet = Column(Boolean, nullable=True)

@@ -149,8 +149,6 @@ async def update_all_history(
                             decimals=tdata.get("decimals"),
                             logo_url=tdata.get("logo_url"),
                             protocol_id=tdata.get("protocol_id"),
-                            price=tdata.get("price"),
-                            price_24h_change=tdata.get("price_24h_change"),
                             is_verified=tdata.get("is_verified"),
                             is_core=tdata.get("is_core"),
                             is_wallet=tdata.get("is_wallet"),
@@ -163,7 +161,7 @@ async def update_all_history(
                             index_elements=['id'],
                             set_={k: tdata.get(k) for k in [
                                 "chain", "name", "symbol", "display_symbol", "optimized_symbol",
-                                "decimals", "logo_url", "protocol_id", "price", "price_24h_change",
+                                "decimals", "logo_url", "protocol_id",
                                 "is_verified", "is_core", "is_wallet", "is_scam", "is_suspicious",
                                 "credit_score", "total_supply", "time_at"
                             ] if k in tdata}
@@ -233,6 +231,14 @@ async def update_all_history(
                                 # Stop processing this address.
                                 break
                         
+                        # Enrich sends/receives with price from token_dict snapshot
+                        for transfer in item.get("sends", []) + item.get("receives", []):
+                            tid = transfer.get("token_id")
+                            if tid and tid in token_dict:
+                                t_price = token_dict[tid].get("price")
+                                if t_price is not None:
+                                    transfer["price"] = t_price
+                        
                         # Insert new
                         new_hist = AddressHistory(
                             id=tx_id,
@@ -241,7 +247,7 @@ async def update_all_history(
                             cate_id=item.get("cate_id"),
                             time_at=int(item.get("time_at")) if item.get("time_at") else None,
                             is_scam=item.get("is_scam", False),
-                            json=item # Store full row data
+                            json=item # Store full row data (with enriched prices)
                         )
                         db.add(new_hist)
                         synced_count += 1
@@ -372,15 +378,16 @@ async def get_readable_history(
                 name = t.name or symbol
                 logo = t.logo_url
             
-            # Only use historical price from raw JSON, don't fall back to current price
+            # Only use historical price (injected at sync time), no fallback
             price = float(historical_price) if historical_price is not None else None
             val = (amount * price) if price is not None else None
+            
             return TokenAmount(
                 token_id=tid,
                 symbol=symbol,
                 name=name,
                 logo_url=logo,
-                amount=amount, # Signed already passed in? No, we pass logic amount
+                amount=amount,
                 amount_raw=abs(amount),
                 value_usd=val,
                 price=price
@@ -417,18 +424,20 @@ async def get_readable_history(
             for s in sends:
                 t_obj = get_token_info(s.get("token_id"), -s.get("amount", 0), s.get("price"))
                 token_changes.append(t_obj)
-                sent_value += abs(t_obj.value_usd) if t_obj.value_usd is not None else 0.0
+                if t_obj.value_usd is not None:
+                    sent_value += abs(t_obj.value_usd)
                 
             # Receives (Positive amount)
             recv_value = 0.0
             for r in receives:
                 t_obj = get_token_info(r.get("token_id"), r.get("amount", 0), r.get("price"))
                 token_changes.append(t_obj)
-                recv_value += abs(t_obj.value_usd) if t_obj.value_usd is not None else 0.0
+                if t_obj.value_usd is not None:
+                    recv_value += abs(t_obj.value_usd)
             
-            # Value Filter (skip if no price data available)
-            has_any_price = any(tc.price is not None for tc in token_changes) if token_changes else False
-            if has_any_price and (sent_value + recv_value) < min_value_usd:
+            # Value Filter — only apply if at least one token has price data
+            has_price = any(tc.price is not None for tc in token_changes)
+            if has_price and (sent_value + recv_value) < min_value_usd:
                 continue
 
             # Identify Wallet Perspective
