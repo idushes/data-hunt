@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
+import sqlalchemy as sa
+import asyncio
 import httpx
 import logging
 from database import get_db
-from models import Account, AddressHistory, ProjectDict, TokenDict, CEXDict
+from models import Account, AddressHistory, ProjectDict, TokenDict, CEXDict, TokenPriceHistory
 from config import DEBANK_ACCESS_KEY
 from dependencies import get_current_account
 
@@ -231,14 +233,6 @@ async def update_all_history(
                                 # Stop processing this address.
                                 break
                         
-                        # Enrich sends/receives with price from token_dict snapshot
-                        for transfer in item.get("sends", []) + item.get("receives", []):
-                            tid = transfer.get("token_id")
-                            if tid and tid in token_dict:
-                                t_price = token_dict[tid].get("price")
-                                if t_price is not None:
-                                    transfer["price"] = t_price
-                        
                         # Insert new
                         new_hist = AddressHistory(
                             id=tx_id,
@@ -247,7 +241,7 @@ async def update_all_history(
                             cate_id=item.get("cate_id"),
                             time_at=int(item.get("time_at")) if item.get("time_at") else None,
                             is_scam=item.get("is_scam", False),
-                            json=item # Store full row data (with enriched prices)
+                            json=item
                         )
                         db.add(new_hist)
                         synced_count += 1
@@ -330,16 +324,28 @@ async def get_readable_history(
         token_ids = set()
         project_ids = set()
         cex_check_addrs = set()
+        price_lookup_keys = set()  # (token_id, chain, date_str)
         
         for hist in chunk:
             data = hist.json or {}
             
             if data.get("token_approve"): continue
+            
+            # Compute date for price lookup
+            tx_date = None
+            if hist.time_at:
+                tx_date = datetime.fromtimestamp(hist.time_at).strftime("%Y-%m-%d")
                 
             for s in data.get("sends", []):
-                if s.get("token_id"): token_ids.add(s["token_id"])
+                if s.get("token_id"):
+                    token_ids.add(s["token_id"])
+                    if tx_date:
+                        price_lookup_keys.add((s["token_id"], hist.chain, tx_date))
             for r in data.get("receives", []):
-                if r.get("token_id"): token_ids.add(r["token_id"])
+                if r.get("token_id"):
+                    token_ids.add(r["token_id"])
+                    if tx_date:
+                        price_lookup_keys.add((r["token_id"], hist.chain, tx_date))
             
             if data.get("project_id"):
                 project_ids.add(data["project_id"])
@@ -355,6 +361,18 @@ async def get_readable_history(
         if token_ids:
             token_objs = db.query(TokenDict).filter(TokenDict.id.in_(token_ids)).all()
             tokens = {t.id: t for t in token_objs}
+        
+        # Batch Fetch Historical Prices
+        price_cache = {}  # (token_id, chain, date) -> price
+        if price_lookup_keys:
+            price_objs = db.query(TokenPriceHistory).filter(
+                sa.tuple_(
+                    TokenPriceHistory.token_id,
+                    TokenPriceHistory.chain,
+                    TokenPriceHistory.date
+                ).in_(price_lookup_keys)
+            ).all()
+            price_cache = {(p.token_id, p.chain, p.date): p.price for p in price_objs}
             
         projects = {}
         if project_ids:
@@ -367,7 +385,7 @@ async def get_readable_history(
              cex_map = {c.id.lower(): c for c in cex_objs}
 
         # Helper to hydrate token
-        def get_token_info(tid, amount, historical_price=None):
+        def get_token_info(tid, amount, chain, tx_date):
             t = tokens.get(tid)
             symbol = "???"
             name = "Unknown"
@@ -378,8 +396,13 @@ async def get_readable_history(
                 name = t.name or symbol
                 logo = t.logo_url
             
-            # Only use historical price (injected at sync time), no fallback
-            price = float(historical_price) if historical_price is not None else None
+            # Look up historical price from cache
+            price = None
+            if tx_date:
+                cached = price_cache.get((tid, chain, tx_date))
+                if cached is not None:
+                    price = float(cached)
+            
             val = (amount * price) if price is not None else None
             
             return TokenAmount(
@@ -416,13 +439,18 @@ async def get_readable_history(
             sends = data.get("sends", [])
             receives = data.get("receives", [])
             
+            # Compute date for price lookup
+            tx_date = None
+            if hist.time_at:
+                tx_date = datetime.fromtimestamp(hist.time_at).strftime("%Y-%m-%d")
+            
             # Prepare Token Changes
             token_changes = []
             
             # Sends (Negative amount)
             sent_value = 0.0
             for s in sends:
-                t_obj = get_token_info(s.get("token_id"), -s.get("amount", 0), s.get("price"))
+                t_obj = get_token_info(s.get("token_id"), -s.get("amount", 0), hist.chain, tx_date)
                 token_changes.append(t_obj)
                 if t_obj.value_usd is not None:
                     sent_value += abs(t_obj.value_usd)
@@ -430,7 +458,7 @@ async def get_readable_history(
             # Receives (Positive amount)
             recv_value = 0.0
             for r in receives:
-                t_obj = get_token_info(r.get("token_id"), r.get("amount", 0), r.get("price"))
+                t_obj = get_token_info(r.get("token_id"), r.get("amount", 0), hist.chain, tx_date)
                 token_changes.append(t_obj)
                 if t_obj.value_usd is not None:
                     recv_value += abs(t_obj.value_usd)
@@ -546,3 +574,141 @@ async def get_readable_history(
             result_items.append(selected_item)
             
     return result_items
+
+
+@router.post("/enrich_prices", summary="Enrich transaction history with historical token prices")
+async def enrich_prices(
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetches historical token prices from DeBank /v1/token/history_price
+    for all non-scam transactions that haven't been enriched yet.
+    Prices are cached in token_price_history table to minimize API calls.
+    """
+    if not account.addresses:
+        raise HTTPException(status_code=400, detail="No addresses linked to this account")
+    
+    if account.balance <= 0:
+        raise HTTPException(status_code=403, detail="Insufficient access balance")
+
+    my_addresses = [addr.address.lower() for addr in account.addresses]
+
+    # 1. Find all un-enriched, non-scam transactions
+    unenriched = db.query(AddressHistory).filter(
+        AddressHistory.address.in_(my_addresses),
+        AddressHistory.prices_synced == False,
+        AddressHistory.is_scam == False
+    ).all()
+
+    if not unenriched:
+        return {"status": "ok", "message": "All prices already synced", "api_calls": 0}
+
+    # 2. Collect unique (token_id, chain, date) tuples needed
+    needed = set()  # (token_id, chain, date_str)
+    for hist in unenriched:
+        data = hist.json or {}
+        if not hist.time_at:
+            continue
+        tx_date = datetime.fromtimestamp(hist.time_at).strftime("%Y-%m-%d")
+        for transfer in data.get("sends", []) + data.get("receives", []):
+            tid = transfer.get("token_id")
+            if tid:
+                needed.add((tid, hist.chain, tx_date))
+
+    if not needed:
+        # Mark all as synced (no tokens to price)
+        for hist in unenriched:
+            hist.prices_synced = True
+        db.commit()
+        return {"status": "ok", "message": "No tokens to price", "api_calls": 0}
+
+    # 3. Filter out tokens that are scam/suspicious
+    token_ids_to_check = {t[0] for t in needed}
+    scam_tokens = set()
+    if token_ids_to_check:
+        scam_objs = db.query(TokenDict.id).filter(
+            TokenDict.id.in_(token_ids_to_check),
+            sa.or_(TokenDict.is_scam == True, TokenDict.is_suspicious == True)
+        ).all()
+        scam_tokens = {obj.id for obj in scam_objs}
+    
+    needed = {(tid, chain, date) for tid, chain, date in needed if tid not in scam_tokens}
+
+    # 4. Check which are already cached
+    already_cached = set()
+    if needed:
+        cached_objs = db.query(
+            TokenPriceHistory.token_id,
+            TokenPriceHistory.chain,
+            TokenPriceHistory.date
+        ).filter(
+            sa.tuple_(
+                TokenPriceHistory.token_id,
+                TokenPriceHistory.chain,
+                TokenPriceHistory.date
+            ).in_(needed)
+        ).all()
+        already_cached = {(obj.token_id, obj.chain, obj.date) for obj in cached_objs}
+
+    to_fetch = needed - already_cached
+
+    # 5. Fetch missing prices from DeBank
+    api_calls = 0
+    errors = []
+    
+    if to_fetch:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            headers = {"AccessKey": DEBANK_ACCESS_KEY}
+            base_url = "https://pro-openapi.debank.com/v1/token/history_price"
+
+            for token_id, chain, date_str in to_fetch:
+                try:
+                    params = {
+                        "id": token_id,
+                        "chain_id": chain,
+                        "date_at": date_str
+                    }
+                    response = await client.get(base_url, params=params, headers=headers)
+                    api_calls += 1
+
+                    if response.status_code == 200:
+                        resp_data = response.json()
+                        price = resp_data.get("price")
+                        if price is not None:
+                            stmt = insert(TokenPriceHistory).values(
+                                token_id=token_id,
+                                chain=chain,
+                                date=date_str,
+                                price=float(price)
+                            ).on_conflict_do_update(
+                                index_elements=['token_id', 'chain', 'date'],
+                                set_={"price": float(price)}
+                            )
+                            db.execute(stmt)
+                    else:
+                        errors.append(f"{token_id}@{chain}/{date_str}: HTTP {response.status_code}")
+                        logger.warning(f"Failed to fetch price for {token_id} on {chain} at {date_str}: {response.status_code}")
+
+                except Exception as e:
+                    errors.append(f"{token_id}@{chain}/{date_str}: {str(e)}")
+                    logger.error(f"Error fetching price for {token_id} on {chain} at {date_str}: {e}")
+
+                # Rate limiting: small delay between requests
+                await asyncio.sleep(0.1)
+
+            db.commit()  # Commit all price inserts
+
+    # 6. Mark transactions as enriched
+    for hist in unenriched:
+        hist.prices_synced = True
+    db.commit()
+
+    return {
+        "status": "ok",
+        "transactions_processed": len(unenriched),
+        "unique_prices_needed": len(needed),
+        "already_cached": len(already_cached),
+        "api_calls": api_calls,
+        "errors": errors if errors else None
+    }

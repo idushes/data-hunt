@@ -107,3 +107,14 @@ class AddressHistory(Base):
     time_at = Column(Integer, nullable=True)
     is_scam = Column(Boolean, default=False)
     json = Column(JSONB, nullable=True)
+    prices_synced = Column(Boolean, default=False)
+
+
+class TokenPriceHistory(Base):
+    __tablename__ = "token_price_history"
+
+    token_id = Column(String, primary_key=True)   # contract address
+    chain = Column(String, primary_key=True)       # e.g. "arb", "eth"
+    date = Column(String, primary_key=True)        # "YYYY-MM-DD"
+    price = Column(Float, nullable=False)          # USD price on that date
+
