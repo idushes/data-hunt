@@ -426,8 +426,9 @@ async def get_readable_history(
                 token_changes.append(t_obj)
                 recv_value += abs(t_obj.value_usd) if t_obj.value_usd is not None else 0.0
             
-            # Value Filter
-            if (sent_value + recv_value) < min_value_usd:
+            # Value Filter (skip if no price data available)
+            has_any_price = any(tc.price is not None for tc in token_changes) if token_changes else False
+            if has_any_price and (sent_value + recv_value) < min_value_usd:
                 continue
 
             # Identify Wallet Perspective
