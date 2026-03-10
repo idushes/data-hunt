@@ -13,7 +13,7 @@ router = APIRouter()
 @router.get(
     "/pool",
     summary="Export Liquidity Pool Data",
-    description="Generates a CSV export of liquidity pool positions for the authenticated user's addresses.\n\nColumns: `id`, `symbol_1`, `amount_1`, `symbol_2`, `amount_2`, `reward_symbol_1`, `reward_amount_1`, `reward_symbol_2`, `reward_amount_2`.",
+    description="Generates a CSV export of liquidity pool positions for the authenticated user's addresses.\n\nColumns: `id`, `symbol_1`, `amount_1`, `symbol_2`, `amount_2`, `reward_symbol_1`, `reward_amount_1`, `reward_symbol_2`, `reward_amount_2`, `usd_value`.",
     responses={
         200: {
             "content": {"text/csv": {}},
@@ -25,10 +25,10 @@ async def get_pool(
     account: Account = Depends(get_current_account),
     db: Session = Depends(get_db)
 ):
-    # Columns: id, symbol_1, amount_1, symbol_2, amount_2
+    # Columns: id, symbol_1, amount_1, symbol_2, amount_2, rewards, usd_value
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "symbol_1", "amount_1", "symbol_2", "amount_2", "reward_symbol_1", "reward_amount_1", "reward_symbol_2", "reward_amount_2"])
+    writer.writerow(["id", "symbol_1", "amount_1", "symbol_2", "amount_2", "reward_symbol_1", "reward_amount_1", "reward_symbol_2", "reward_amount_2", "usd_value"])
 
     # Extract active addresses
     valid_addresses = [addr.address.lower() for addr in account.addresses] if account.addresses else []
@@ -51,6 +51,10 @@ async def get_pool(
                     # We are looking for pools
                     detail = portfolio.get("detail", {})
                     supply_token_list = detail.get("supply_token_list", [])
+                    
+                    # Get USD value of the entire position from stats
+                    stats = portfolio.get("stats", {})
+                    usd_value = stats.get("asset_usd_value", 0)
 
                     # Filter: must be exactly 2 tokens in supply (liquidity pool)
                     if len(supply_token_list) == 2:
@@ -83,6 +87,6 @@ async def get_pool(
                         # Construct ID: {address_short}-{protocol_id}-{chain}
                         combined_id = f"{address_short}-{protocol_id}-{chain}-{symbol_1.lower()}-{symbol_2.lower()}"
                         
-                        writer.writerow([combined_id, symbol_1, amount_1, symbol_2, amount_2, reward_symbol_1, reward_amount_1, reward_symbol_2, reward_amount_2])
+                        writer.writerow([combined_id, symbol_1, amount_1, symbol_2, amount_2, reward_symbol_1, reward_amount_1, reward_symbol_2, reward_amount_2, usd_value])
 
     return Response(content=output.getvalue(), media_type="text/csv")
