@@ -102,8 +102,8 @@ async def get_paradex_balance(
         description="Specific Paradex subaccount address. If set, response is a single number.",
     ),
     field: str = Query(
-        "total_collateral",
-        description="Balance field to return. Default is total_collateral.",
+        "account_value",
+        description="Balance field to return. Default is account_value.",
     ),
 ):
     if field not in ALLOWED_BALANCE_FIELDS:
@@ -125,7 +125,15 @@ async def get_paradex_balance(
 
         payload = await _fetch_paradex_json(client, "/account/summary", token)
 
-    results = payload.get("results", [])
+    if isinstance(payload, list):
+        results = payload
+    elif isinstance(payload, dict):
+        results = payload.get("results", [])
+    else:
+        raise HTTPException(
+            status_code=502, detail="Unexpected Paradex response format"
+        )
+
     if not isinstance(results, list):
         raise HTTPException(
             status_code=502, detail="Unexpected Paradex response format"
