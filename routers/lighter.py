@@ -1,4 +1,3 @@
-import asyncio
 import csv
 import io
 from decimal import Decimal, InvalidOperation
@@ -84,6 +83,41 @@ async def _fetch_account_by_index(
     return account
 
 
+def _parse_readonly_token(token: str) -> str:
+    normalized_token = token.strip()
+    if not normalized_token:
+        raise HTTPException(status_code=400, detail="Token is required")
+
+    parts = normalized_token.split(":")
+    if len(parts) < 5 or parts[0] != "ro" or not parts[1].isdigit():
+        raise HTTPException(status_code=400, detail="Invalid Lighter readonly token")
+
+    return parts[1]
+
+
+def _parse_accounts_csv(accounts: str) -> list[str]:
+    parsed_accounts = []
+    seen_accounts = set()
+
+    for raw_item in accounts.split(","):
+        account_index = raw_item.strip()
+        if not account_index:
+            continue
+        if not account_index.isdigit():
+            raise HTTPException(
+                status_code=400,
+                detail="Lighter accounts must be numeric account_index values",
+            )
+        if account_index not in seen_accounts:
+            seen_accounts.add(account_index)
+            parsed_accounts.append(account_index)
+
+    if not parsed_accounts:
+        raise HTTPException(status_code=400, detail="At least one account is required")
+
+    return parsed_accounts
+
+
 async def _fetch_accounts_for_address(
     client: httpx.AsyncClient, address: str
 ) -> list[dict[str, object]]:
@@ -109,10 +143,67 @@ async def _fetch_accounts_for_address(
     if not indexes:
         return []
 
-    accounts = await asyncio.gather(
-        *[_fetch_account_by_index(client, account_index) for account_index in indexes]
-    )
+    accounts = []
+    for account_index in indexes:
+        accounts.append(await _fetch_account_by_index(client, account_index))
+
     return accounts
+
+
+async def _resolve_accounts(
+    client: httpx.AsyncClient,
+    token: str | None,
+    account: str | None,
+    accounts: str | None,
+    address: str | None,
+) -> tuple[list[dict[str, object]], bool]:
+    provided_args = [
+        token is not None,
+        account is not None,
+        accounts is not None,
+        address is not None,
+    ]
+    if sum(provided_args) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of token, account, accounts, or address",
+        )
+
+    if token is not None:
+        resolved_account = _parse_readonly_token(token)
+        return [await _fetch_account_by_index(client, resolved_account)], True
+
+    if account is not None:
+        normalized_account = account.strip()
+        if not normalized_account or not normalized_account.isdigit():
+            raise HTTPException(
+                status_code=400,
+                detail="Lighter account must be a numeric account_index",
+            )
+        return [await _fetch_account_by_index(client, normalized_account)], True
+
+    if accounts is not None:
+        parsed_accounts = _parse_accounts_csv(accounts)
+        return [
+            await _fetch_account_by_index(client, item) for item in parsed_accounts
+        ], False
+
+    normalized_address = address.strip() if address is not None else ""
+    if not normalized_address:
+        raise HTTPException(status_code=400, detail="Address is required")
+
+    try:
+        return await _fetch_accounts_for_address(client, normalized_address), False
+    except HTTPException as exc:
+        if exc.status_code == 400 and "account not found" in str(exc.detail).lower():
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Lighter could not find accounts for this address. "
+                    "Use token or account_index if you already know the account."
+                ),
+            )
+        raise
 
 
 @router.get(
@@ -132,22 +223,27 @@ async def _fetch_accounts_for_address(
     },
 )
 async def get_lighter_balance(
-    address: str = Query(
-        ..., description="L1 wallet address linked to Lighter accounts."
+    token: str | None = Query(
+        None,
+        description="Lighter readonly token. Used only to extract account_index.",
     ),
     account: str | None = Query(
         None,
         description="Specific Lighter account_index. If set, response is a single number.",
+    ),
+    accounts: str | None = Query(
+        None,
+        description="Comma-separated Lighter account_index values. Returns a CSV table.",
+    ),
+    address: str | None = Query(
+        None,
+        description="L1 wallet address linked to Lighter accounts. Best-effort fallback.",
     ),
     field: str = Query(
         "total_asset_value",
         description="Balance field to return. Default is total_asset_value.",
     ),
 ):
-    normalized_address = address.strip()
-    if not normalized_address:
-        raise HTTPException(status_code=400, detail="Address is required")
-
     if field not in ALLOWED_BALANCE_FIELDS:
         raise HTTPException(
             status_code=400,
@@ -155,24 +251,16 @@ async def get_lighter_balance(
         )
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        accounts = await _fetch_accounts_for_address(client, normalized_address)
-
-    if account:
-        requested_account = account.strip()
-        matched_item = next(
-            (
-                item
-                for item in accounts
-                if str(item.get("account_index") or item.get("index") or "")
-                == requested_account
-            ),
-            None,
+        resolved_accounts, single_value_response = await _resolve_accounts(
+            client,
+            token,
+            account,
+            accounts,
+            address,
         )
 
-        if matched_item is None:
-            raise HTTPException(status_code=404, detail="Lighter account not found")
-
-        value = _normalize_number(matched_item.get(field))
+    if single_value_response:
+        value = _normalize_number(resolved_accounts[0].get(field))
         return Response(content=value, media_type="text/plain")
 
     output = io.StringIO()
@@ -191,7 +279,7 @@ async def get_lighter_balance(
         ]
     )
 
-    for item in accounts:
+    for item in resolved_accounts:
         account_type = str(item.get("account_type", ""))
         writer.writerow(
             [
