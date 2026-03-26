@@ -113,16 +113,6 @@ async def get_paradex_balance(
         )
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        if account:
-            payload = await _fetch_paradex_json(
-                client,
-                "/account",
-                token,
-                params={"subaccount_address": account},
-            )
-            value = _normalize_number(payload.get(field))
-            return Response(content=value, media_type="text/plain")
-
         payload = await _fetch_paradex_json(client, "/account/summary", token)
 
     if isinstance(payload, list):
@@ -138,6 +128,24 @@ async def get_paradex_balance(
         raise HTTPException(
             status_code=502, detail="Unexpected Paradex response format"
         )
+
+    if account:
+        normalized_account = account.lower()
+        matched_item = next(
+            (
+                item
+                for item in results
+                if isinstance(item, dict)
+                and str(item.get("account", "")).lower() == normalized_account
+            ),
+            None,
+        )
+
+        if matched_item is None:
+            raise HTTPException(status_code=404, detail="Paradex account not found")
+
+        value = _normalize_number(matched_item.get(field))
+        return Response(content=value, media_type="text/plain")
 
     output = io.StringIO()
     writer = csv.writer(output)
