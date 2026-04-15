@@ -90,6 +90,7 @@ from routers.cmc import router as cmc_router
 from routers.paradex import router as paradex_router
 from routers.lighter import router as lighter_router
 from routers.hyperliquid import router as hyperliquid_router
+from routers.solana import router as solana_router
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -134,6 +135,7 @@ app.include_router(cmc_router)
 app.include_router(paradex_router)
 app.include_router(lighter_router)
 app.include_router(hyperliquid_router)
+app.include_router(solana_router)
 
 app.include_router(auth_router)
 app.include_router(chains_router)
