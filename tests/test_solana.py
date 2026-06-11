@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from routers.solana import (
     _fetch_market_infos,
     _fetch_optional_lookup,
+    _fetch_optional_positions,
     _filter_positive_balance_items,
 )
 
@@ -50,6 +51,38 @@ class PositiveBalanceItemsTest(unittest.TestCase):
         )
 
         self.assertEqual(result, [{"balance": "1", "id": "positive"}])
+
+
+class OptionalPositionsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_returns_items_from_fetcher(self):
+        fetcher = AsyncMock(return_value=[{"balance": "1"}])
+
+        result = await _fetch_optional_positions(fetcher, object())
+
+        self.assertEqual(result, [{"balance": "1"}])
+
+    async def test_returns_empty_list_on_bad_gateway(self):
+        fetcher = AsyncMock(side_effect=HTTPException(status_code=502))
+
+        result = await _fetch_optional_positions(fetcher, object())
+
+        self.assertEqual(result, [])
+
+    async def test_returns_empty_list_on_timeout(self):
+        async def slow_fetcher():
+            await asyncio.sleep(0.05)
+            return [{"balance": "1"}]
+
+        with patch("routers.solana.OPTIONAL_POSITION_TIMEOUT", 0.001):
+            result = await _fetch_optional_positions(slow_fetcher)
+
+        self.assertEqual(result, [])
+
+    async def test_reraises_non_bad_gateway_errors(self):
+        fetcher = AsyncMock(side_effect=HTTPException(status_code=400))
+
+        with self.assertRaises(HTTPException):
+            await _fetch_optional_positions(fetcher, object())
 
 
 class OptionalLookupTest(unittest.IsolatedAsyncioTestCase):

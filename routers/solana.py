@@ -11,6 +11,7 @@ from fastapi.responses import Response
 GRAPHQL_ENDPOINT = "https://gmx-solana-sqd.squids.live/gmx-solana-base:prod/api/graphql"
 SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
 RETRYABLE_GRAPHQL_STATUS_CODES = {502, 503, 504}
+OPTIONAL_POSITION_TIMEOUT = 8.0
 OPTIONAL_LOOKUP_TIMEOUT = 6.0
 
 router = APIRouter(prefix="/solana", tags=["solana"])
@@ -293,6 +294,23 @@ async def _fetch_optional_lookup(fetcher: Any, *args: Any) -> dict[str, Any]:
         raise
 
 
+async def _fetch_optional_positions(fetcher: Any, *args: Any) -> list[dict[str, Any]]:
+    try:
+        items = await asyncio.wait_for(
+            fetcher(*args), timeout=OPTIONAL_POSITION_TIMEOUT
+        )
+    except TimeoutError:
+        return []
+    except httpx.HTTPError:
+        return []
+    except HTTPException as exc:
+        if exc.status_code == 502:
+            return []
+        raise
+
+    return items if isinstance(items, list) else []
+
+
 def _build_gm_rows(
     users: list[dict[str, Any]],
     market_infos: dict[str, dict[str, Any]],
@@ -384,8 +402,10 @@ async def get_gmtrade_csv(
 
     async with httpx.AsyncClient(timeout=20.0) as client:
         gm_users, glv_users = await asyncio.gather(
-            _fetch_market_gm_users(client, normalized_wallet),
-            _fetch_glv_users(client, normalized_wallet),
+            _fetch_optional_positions(
+                _fetch_market_gm_users, client, normalized_wallet
+            ),
+            _fetch_optional_positions(_fetch_glv_users, client, normalized_wallet),
         )
         gm_users = _filter_positive_balance_items(gm_users)
         glv_users = _filter_positive_balance_items(glv_users)
