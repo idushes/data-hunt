@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 from typing import Any
@@ -9,16 +10,35 @@ from fastapi.responses import Response
 
 GRAPHQL_ENDPOINT = "https://gmx-solana-sqd.squids.live/gmx-solana-base:prod/api/graphql"
 SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
+RETRYABLE_GRAPHQL_STATUS_CODES = {502, 503, 504}
 
 router = APIRouter(prefix="/solana", tags=["solana"])
 
 
 async def _query_graphql(client: httpx.AsyncClient, query: str) -> dict[str, Any]:
-    response = await client.post(
-        GRAPHQL_ENDPOINT,
-        json={"query": query},
-        headers={"Content-Type": "application/json"},
-    )
+    for attempt in range(3):
+        try:
+            response = await client.post(
+                GRAPHQL_ENDPOINT,
+                json={"query": query},
+                headers={"Content-Type": "application/json"},
+            )
+        except httpx.HTTPError as exc:
+            if attempt < 2:
+                await asyncio.sleep(0.25 * (attempt + 1))
+                continue
+            raise HTTPException(
+                status_code=502, detail=f"GMTrade GraphQL request failed: {exc}"
+            ) from exc
+
+        if (
+            response.status_code in RETRYABLE_GRAPHQL_STATUS_CODES
+            and attempt < 2
+        ):
+            await asyncio.sleep(0.25 * (attempt + 1))
+            continue
+
+        break
 
     if response.status_code < 200 or response.status_code >= 300:
         raise HTTPException(
@@ -79,6 +99,16 @@ def _round2(value: float) -> float:
 
 def _round9(value: float) -> float:
     return round(value, 9)
+
+
+def _has_positive_balance(item: dict[str, Any]) -> bool:
+    return _decimal_1e9(item.get("balance")) > 0
+
+
+def _filter_positive_balance_items(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [item for item in items if _has_positive_balance(item)]
 
 
 def _fallback_name(name: str | None, mint: str) -> str:
@@ -249,6 +279,15 @@ async def _fetch_asset_names(
     return names
 
 
+async def _fetch_optional_lookup(fetcher: Any, *args: Any) -> dict[str, Any]:
+    try:
+        return await fetcher(*args)
+    except HTTPException as exc:
+        if exc.status_code == 502:
+            return {}
+        raise
+
+
 def _build_gm_rows(
     users: list[dict[str, Any]],
     market_infos: dict[str, dict[str, Any]],
@@ -341,12 +380,20 @@ async def get_gmtrade_csv(
     async with httpx.AsyncClient(timeout=20.0) as client:
         gm_users = await _fetch_market_gm_users(client, normalized_wallet)
         glv_users = await _fetch_glv_users(client, normalized_wallet)
+        gm_users = _filter_positive_balance_items(gm_users)
+        glv_users = _filter_positive_balance_items(glv_users)
         gm_mints = _collect_unique_mints(gm_users, "marketToken")
-        market_infos = await _fetch_market_infos(client, gm_mints)
-        gm_infos = await _fetch_market_gm_infos(client, gm_mints)
+        market_infos = await _fetch_optional_lookup(
+            _fetch_market_infos, client, gm_mints
+        )
+        gm_infos = await _fetch_optional_lookup(
+            _fetch_market_gm_infos, client, gm_mints
+        )
         glv_mints = _collect_unique_mints(glv_users, "glvToken")
-        glv_infos = await _fetch_glv_infos(client, glv_mints)
-        asset_names = await _fetch_asset_names(client, glv_mints)
+        glv_infos = await _fetch_optional_lookup(_fetch_glv_infos, client, glv_mints)
+        asset_names = await _fetch_optional_lookup(
+            _fetch_asset_names, client, glv_mints
+        )
 
     rows = _build_gm_rows(gm_users, market_infos, gm_infos) + _build_glv_rows(
         glv_users, glv_infos, asset_names
