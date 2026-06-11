@@ -126,10 +126,18 @@ async def _fetch_glv_users(
     return users if isinstance(users, list) else []
 
 
-async def _fetch_market_infos(client: httpx.AsyncClient) -> dict[str, dict[str, Any]]:
+async def _fetch_market_infos(
+    client: httpx.AsyncClient, mints: list[str]
+) -> dict[str, dict[str, Any]]:
+    if not mints:
+        return {}
+
     data = await _query_graphql(
         client,
-        "{ marketInfos { id name longTokenMint shortTokenMint indexTokenMint decimal } }",
+        (
+            f"{{ marketInfos(where:{{id_in:[{_quote_list(mints)}]}}) "
+            "{ id name longTokenMint shortTokenMint indexTokenMint decimal } }"
+        ),
     )
     items = data.get("marketInfos") or []
     if not isinstance(items, list):
@@ -333,10 +341,9 @@ async def get_gmtrade_csv(
     async with httpx.AsyncClient(timeout=20.0) as client:
         gm_users = await _fetch_market_gm_users(client, normalized_wallet)
         glv_users = await _fetch_glv_users(client, normalized_wallet)
-        market_infos = await _fetch_market_infos(client)
-        gm_infos = await _fetch_market_gm_infos(
-            client, _collect_unique_mints(gm_users, "marketToken")
-        )
+        gm_mints = _collect_unique_mints(gm_users, "marketToken")
+        market_infos = await _fetch_market_infos(client, gm_mints)
+        gm_infos = await _fetch_market_gm_infos(client, gm_mints)
         glv_mints = _collect_unique_mints(glv_users, "glvToken")
         glv_infos = await _fetch_glv_infos(client, glv_mints)
         asset_names = await _fetch_asset_names(client, glv_mints)
