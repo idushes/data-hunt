@@ -11,6 +11,7 @@ from fastapi.responses import Response
 GRAPHQL_ENDPOINT = "https://gmx-solana-sqd.squids.live/gmx-solana-base:prod/api/graphql"
 SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
 RETRYABLE_GRAPHQL_STATUS_CODES = {502, 503, 504}
+OPTIONAL_LOOKUP_TIMEOUT = 6.0
 
 router = APIRouter(prefix="/solana", tags=["solana"])
 
@@ -281,7 +282,11 @@ async def _fetch_asset_names(
 
 async def _fetch_optional_lookup(fetcher: Any, *args: Any) -> dict[str, Any]:
     try:
-        return await fetcher(*args)
+        return await asyncio.wait_for(fetcher(*args), timeout=OPTIONAL_LOOKUP_TIMEOUT)
+    except TimeoutError:
+        return {}
+    except httpx.HTTPError:
+        return {}
     except HTTPException as exc:
         if exc.status_code == 502:
             return {}
@@ -378,21 +383,19 @@ async def get_gmtrade_csv(
         raise HTTPException(status_code=400, detail="wallet is required")
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        gm_users = await _fetch_market_gm_users(client, normalized_wallet)
-        glv_users = await _fetch_glv_users(client, normalized_wallet)
+        gm_users, glv_users = await asyncio.gather(
+            _fetch_market_gm_users(client, normalized_wallet),
+            _fetch_glv_users(client, normalized_wallet),
+        )
         gm_users = _filter_positive_balance_items(gm_users)
         glv_users = _filter_positive_balance_items(glv_users)
         gm_mints = _collect_unique_mints(gm_users, "marketToken")
-        market_infos = await _fetch_optional_lookup(
-            _fetch_market_infos, client, gm_mints
-        )
-        gm_infos = await _fetch_optional_lookup(
-            _fetch_market_gm_infos, client, gm_mints
-        )
         glv_mints = _collect_unique_mints(glv_users, "glvToken")
-        glv_infos = await _fetch_optional_lookup(_fetch_glv_infos, client, glv_mints)
-        asset_names = await _fetch_optional_lookup(
-            _fetch_asset_names, client, glv_mints
+        market_infos, gm_infos, glv_infos, asset_names = await asyncio.gather(
+            _fetch_optional_lookup(_fetch_market_infos, client, gm_mints),
+            _fetch_optional_lookup(_fetch_market_gm_infos, client, gm_mints),
+            _fetch_optional_lookup(_fetch_glv_infos, client, glv_mints),
+            _fetch_optional_lookup(_fetch_asset_names, client, glv_mints),
         )
 
     rows = _build_gm_rows(gm_users, market_infos, gm_infos) + _build_glv_rows(

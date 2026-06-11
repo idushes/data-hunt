@@ -1,6 +1,8 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi import HTTPException
 
 from routers.solana import (
@@ -63,3 +65,20 @@ class OptionalLookupTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(HTTPException):
             await _fetch_optional_lookup(fetcher, object())
+
+    async def test_returns_empty_dict_on_timeout(self):
+        async def slow_fetcher():
+            await asyncio.sleep(0.05)
+            return {"unexpected": True}
+
+        with patch("routers.solana.OPTIONAL_LOOKUP_TIMEOUT", 0.001):
+            result = await _fetch_optional_lookup(slow_fetcher)
+
+        self.assertEqual(result, {})
+
+    async def test_returns_empty_dict_on_httpx_errors(self):
+        fetcher = AsyncMock(side_effect=httpx.ConnectError("network unavailable"))
+
+        result = await _fetch_optional_lookup(fetcher, object())
+
+        self.assertEqual(result, {})
