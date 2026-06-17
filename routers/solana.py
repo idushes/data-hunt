@@ -13,8 +13,22 @@ SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
 RETRYABLE_GRAPHQL_STATUS_CODES = {502, 503, 504}
 OPTIONAL_POSITION_TIMEOUT = 8.0
 OPTIONAL_LOOKUP_TIMEOUT = 6.0
+GMTRADE_CSV_CACHE_MAX_SIZE = 256
+GMTRADE_CSV_HEADER = [
+    "type",
+    "mint",
+    "name",
+    "balance",
+    "price_usd",
+    "value_usd",
+    "long_token_mint",
+    "short_token_mint",
+    "index_token_mint",
+    "updated_at",
+]
 
 router = APIRouter(prefix="/solana", tags=["solana"])
+_gmtrade_csv_cache: dict[str, str] = {}
 
 
 async def _query_graphql(client: httpx.AsyncClient, query: str) -> dict[str, Any]:
@@ -311,6 +325,38 @@ async def _fetch_optional_positions(fetcher: Any, *args: Any) -> list[dict[str, 
     return items if isinstance(items, list) else []
 
 
+async def _fetch_required_positions(fetcher: Any, *args: Any) -> list[dict[str, Any]]:
+    try:
+        items = await asyncio.wait_for(
+            fetcher(*args), timeout=OPTIONAL_POSITION_TIMEOUT
+        )
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=502, detail="GMTrade positions timed out"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"GMTrade positions request failed: {exc}"
+        ) from exc
+
+    return items if isinstance(items, list) else []
+
+
+async def _fetch_required_lookup(fetcher: Any, *args: Any) -> dict[str, Any]:
+    try:
+        items = await asyncio.wait_for(fetcher(*args), timeout=OPTIONAL_LOOKUP_TIMEOUT)
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=502, detail="GMTrade lookup timed out"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"GMTrade lookup request failed: {exc}"
+        ) from exc
+
+    return items if isinstance(items, dict) else {}
+
+
 def _build_gm_rows(
     users: list[dict[str, Any]],
     market_infos: dict[str, dict[str, Any]],
@@ -384,61 +430,26 @@ def _build_glv_rows(
     return rows
 
 
-@router.get(
-    "/gmtrade.csv",
-    summary="Export Solana GMTrade assets for Google Sheets",
-    description=(
-        "Returns a CSV table with GM and GLV positions for a Solana wallet address. "
-        "Suitable for Google Sheets IMPORTDATA."
-    ),
-    responses={200: {"content": {"text/csv": {}}}},
-)
-async def get_gmtrade_csv(
-    wallet: str = Query(..., description="Solana wallet address"),
-):
-    normalized_wallet = wallet.strip()
-    if not normalized_wallet:
-        raise HTTPException(status_code=400, detail="wallet is required")
+def _get_cached_gmtrade_csv(wallet: str) -> str | None:
+    cached = _gmtrade_csv_cache.get(wallet)
+    if cached is not None:
+        _gmtrade_csv_cache[wallet] = _gmtrade_csv_cache.pop(wallet)
+    return cached
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        gm_users, glv_users = await asyncio.gather(
-            _fetch_optional_positions(
-                _fetch_market_gm_users, client, normalized_wallet
-            ),
-            _fetch_optional_positions(_fetch_glv_users, client, normalized_wallet),
-        )
-        gm_users = _filter_positive_balance_items(gm_users)
-        glv_users = _filter_positive_balance_items(glv_users)
-        gm_mints = _collect_unique_mints(gm_users, "marketToken")
-        glv_mints = _collect_unique_mints(glv_users, "glvToken")
-        market_infos, gm_infos, glv_infos, asset_names = await asyncio.gather(
-            _fetch_optional_lookup(_fetch_market_infos, client, gm_mints),
-            _fetch_optional_lookup(_fetch_market_gm_infos, client, gm_mints),
-            _fetch_optional_lookup(_fetch_glv_infos, client, glv_mints),
-            _fetch_optional_lookup(_fetch_asset_names, client, glv_mints),
-        )
 
-    rows = _build_gm_rows(gm_users, market_infos, gm_infos) + _build_glv_rows(
-        glv_users, glv_infos, asset_names
-    )
-    rows.sort(key=lambda item: item["value_usd"], reverse=True)
+def _set_cached_gmtrade_csv(wallet: str, content: str) -> None:
+    if wallet in _gmtrade_csv_cache:
+        _gmtrade_csv_cache.pop(wallet)
+    elif len(_gmtrade_csv_cache) >= GMTRADE_CSV_CACHE_MAX_SIZE:
+        _gmtrade_csv_cache.pop(next(iter(_gmtrade_csv_cache)))
 
+    _gmtrade_csv_cache[wallet] = content
+
+
+def _render_gmtrade_csv(rows: list[dict[str, Any]]) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(
-        [
-            "type",
-            "mint",
-            "name",
-            "balance",
-            "price_usd",
-            "value_usd",
-            "long_token_mint",
-            "short_token_mint",
-            "index_token_mint",
-            "updated_at",
-        ]
-    )
+    writer.writerow(GMTRADE_CSV_HEADER)
 
     for row in rows:
         writer.writerow(
@@ -456,4 +467,61 @@ async def get_gmtrade_csv(
             ]
         )
 
-    return Response(content=output.getvalue(), media_type="text/csv")
+    return output.getvalue()
+
+
+async def _build_gmtrade_csv_content(normalized_wallet: str) -> str:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        gm_users, glv_users = await asyncio.gather(
+            _fetch_required_positions(
+                _fetch_market_gm_users, client, normalized_wallet
+            ),
+            _fetch_required_positions(_fetch_glv_users, client, normalized_wallet),
+        )
+        gm_users = _filter_positive_balance_items(gm_users)
+        glv_users = _filter_positive_balance_items(glv_users)
+        gm_mints = _collect_unique_mints(gm_users, "marketToken")
+        glv_mints = _collect_unique_mints(glv_users, "glvToken")
+        market_infos, gm_infos, glv_infos, asset_names = await asyncio.gather(
+            _fetch_required_lookup(_fetch_market_infos, client, gm_mints),
+            _fetch_required_lookup(_fetch_market_gm_infos, client, gm_mints),
+            _fetch_required_lookup(_fetch_glv_infos, client, glv_mints),
+            _fetch_required_lookup(_fetch_asset_names, client, glv_mints),
+        )
+
+    rows = _build_gm_rows(gm_users, market_infos, gm_infos) + _build_glv_rows(
+        glv_users, glv_infos, asset_names
+    )
+    rows.sort(key=lambda item: item["value_usd"], reverse=True)
+    return _render_gmtrade_csv(rows)
+
+
+@router.get(
+    "/gmtrade.csv",
+    summary="Export Solana GMTrade assets for Google Sheets",
+    description=(
+        "Returns a CSV table with GM and GLV positions for a Solana wallet address. "
+        "Suitable for Google Sheets IMPORTDATA."
+    ),
+    responses={200: {"content": {"text/csv": {}}}},
+)
+async def get_gmtrade_csv(
+    wallet: str = Query(..., description="Solana wallet address"),
+):
+    normalized_wallet = wallet.strip()
+    if not normalized_wallet:
+        raise HTTPException(status_code=400, detail="wallet is required")
+
+    try:
+        content = await _build_gmtrade_csv_content(normalized_wallet)
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+
+        content = _get_cached_gmtrade_csv(normalized_wallet)
+        if content is None:
+            content = _render_gmtrade_csv([])
+    else:
+        _set_cached_gmtrade_csv(normalized_wallet, content)
+
+    return Response(content=content, media_type="text/csv")

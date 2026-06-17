@@ -6,10 +6,12 @@ import httpx
 from fastapi import HTTPException
 
 from routers.solana import (
+    _gmtrade_csv_cache,
     _fetch_market_infos,
     _fetch_optional_lookup,
     _fetch_optional_positions,
     _filter_positive_balance_items,
+    get_gmtrade_csv,
 )
 
 
@@ -115,3 +117,51 @@ class OptionalLookupTest(unittest.IsolatedAsyncioTestCase):
         result = await _fetch_optional_lookup(fetcher, object())
 
         self.assertEqual(result, {})
+
+
+class GmtradeCsvCacheTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _gmtrade_csv_cache.clear()
+
+    def tearDown(self):
+        _gmtrade_csv_cache.clear()
+
+    async def test_updates_cache_after_successful_refresh(self):
+        content = "type,mint\nGM,mint-a\n"
+
+        with patch(
+            "routers.solana._build_gmtrade_csv_content", new_callable=AsyncMock
+        ) as build:
+            build.return_value = content
+            response = await get_gmtrade_csv(" wallet-a ")
+
+        build.assert_awaited_once_with("wallet-a")
+        self.assertEqual(response.body.decode(), content)
+        self.assertEqual(_gmtrade_csv_cache["wallet-a"], content)
+
+    async def test_returns_cached_csv_when_refresh_fails(self):
+        cached = "type,mint\nGM,cached-mint\n"
+        _gmtrade_csv_cache["wallet-a"] = cached
+
+        with patch(
+            "routers.solana._build_gmtrade_csv_content", new_callable=AsyncMock
+        ) as build:
+            build.side_effect = HTTPException(status_code=502)
+            response = await get_gmtrade_csv("wallet-a")
+
+        self.assertEqual(response.body.decode(), cached)
+
+    async def test_returns_empty_csv_when_refresh_fails_without_cache(self):
+        with patch(
+            "routers.solana._build_gmtrade_csv_content", new_callable=AsyncMock
+        ) as build:
+            build.side_effect = HTTPException(status_code=502)
+            response = await get_gmtrade_csv("wallet-a")
+
+        self.assertEqual(
+            response.body.decode(),
+            (
+                "type,mint,name,balance,price_usd,value_usd,long_token_mint,"
+                "short_token_mint,index_token_mint,updated_at\r\n"
+            ),
+        )
