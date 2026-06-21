@@ -16,5 +16,6 @@ dependencies = [
     "sqlalchemy>=2.0.45",
     "psycopg2-binary>=2.9.10",
     "pyjwt>=2.10.1",
+    "cryptography>=42.0.5",
     "gunicorn>=23.0.0",
 ]
