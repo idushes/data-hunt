@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -8,17 +9,26 @@ from fastapi import HTTPException
 from routers.solana import (
     GMTRADE_MARKET_DECIMALS,
     GMTRADE_PRICE_DECIMALS,
+    SPL_TOKEN_2022_PROGRAM_ID,
+    SPL_TOKEN_PROGRAM_ID,
     _base58_encode,
+    _build_kamino_rows,
     _build_gmtrade_perp_rows,
     _decode_gmtrade_perp_position,
+    _is_solana_address,
+    _kamino_csv_cache,
     _gmtrade_csv_cache,
     _gmtrade_perp_csv_cache,
     _fetch_market_infos,
     _fetch_optional_lookup,
     _fetch_optional_positions,
+    _fetch_token_accounts,
     _filter_positive_balance_items,
+    _normalize_kamino_vault_name,
+    _render_kamino_csv,
     _render_gmtrade_perp_csv,
     _rpc_request,
+    get_kamino_csv,
     get_gmtrade_csv,
     get_gmtrade_perps_csv,
 )
@@ -62,6 +72,27 @@ class PositiveBalanceItemsTest(unittest.TestCase):
         )
 
         self.assertEqual(result, [{"balance": "1", "id": "positive"}])
+
+
+class SolanaAddressConstantsTest(unittest.TestCase):
+    def test_token_program_ids_are_valid_solana_addresses(self):
+        self.assertTrue(_is_solana_address(SPL_TOKEN_PROGRAM_ID))
+        self.assertTrue(_is_solana_address(SPL_TOKEN_2022_PROGRAM_ID))
+
+
+class TokenAccountsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_ignores_unsupported_token_2022_program_lookup(self):
+        async def fetcher(_client, _wallet, token_program_id):
+            if token_program_id == SPL_TOKEN_PROGRAM_ID:
+                return [{"pubkey": "token-account"}]
+            raise HTTPException(
+                status_code=502, detail="unrecognized Token program id"
+            )
+
+        with patch("routers.solana._fetch_token_accounts_by_owner", fetcher):
+            result = await _fetch_token_accounts(object(), "wallet")
+
+        self.assertEqual(result, [{"pubkey": "token-account"}])
 
 
 class OptionalPositionsTest(unittest.IsolatedAsyncioTestCase):
@@ -174,6 +205,109 @@ class GmtradeCsvCacheTest(unittest.IsolatedAsyncioTestCase):
                 "short_token_mint,index_token_mint,updated_at\r\n"
             ),
         )
+
+
+class KaminoCsvTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _kamino_csv_cache.clear()
+
+    def tearDown(self):
+        _kamino_csv_cache.clear()
+
+    def test_normalizes_kvault_metadata_name_to_resource_name(self):
+        self.assertEqual(
+            _normalize_kamino_vault_name("kVault PYUSD Sentora"),
+            _normalize_kamino_vault_name("Sentora PYUSD"),
+        )
+
+    def test_builds_kvault_rows_with_metrics(self):
+        rows = _build_kamino_rows(
+            "11111111111111111111111111111111",
+            [{"mint": "share-mint", "balance": Decimal("10")}],
+            {
+                "share-mint": {
+                    "name": "kVault PYUSD Sentora",
+                    "symbol": "kV-PYUSD",
+                }
+            },
+            {
+                "mainnet-beta": {
+                    "vaults": {
+                        "vault-address": {
+                            "name": "Sentora PYUSD",
+                            "tokenSymbol": "PYUSD",
+                        }
+                    }
+                }
+            },
+            {
+                "vault-address": {
+                    "tokensPerShare": "1.0118",
+                    "tokenPrice": "1",
+                    "apy": "0.032",
+                    "apy7d": "0.065",
+                    "apy30d": "0.062",
+                    "apy90d": "0.064",
+                    "apyFarmRewards": "0.03",
+                    "apyActual": "0.031",
+                    "sharePrice": "1.0118",
+                    "tokensAvailable": "100",
+                    "tokensInvested": "147000000",
+                }
+            },
+            "2026-06-21T00:00:00Z",
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["type"], "kVault")
+        self.assertEqual(rows[0]["vault_address"], "vault-address")
+        self.assertEqual(rows[0]["vault_name"], "Sentora PYUSD")
+        self.assertEqual(rows[0]["share_symbol"], "kV-PYUSD")
+        self.assertEqual(rows[0]["underlying_symbol"], "PYUSD")
+        self.assertEqual(rows[0]["share_balance"], "10")
+        self.assertEqual(rows[0]["underlying_amount"], "10.118")
+        self.assertEqual(rows[0]["value_usd"], "10.118")
+        self.assertEqual(rows[0]["apy"], "0.032")
+        self.assertEqual(rows[0]["farm_rewards_apy"], "0.03")
+
+    def test_renders_empty_kamino_csv(self):
+        self.assertEqual(
+            _render_kamino_csv([]),
+            (
+                "type,wallet,vault_address,share_mint,vault_name,share_symbol,"
+                "underlying_symbol,share_balance,underlying_amount,token_price_usd,"
+                "value_usd,apy,apy_7d,apy_30d,apy_90d,farm_rewards_apy,"
+                "actual_apy,share_price,tokens_per_share,tokens_available,"
+                "tvl_tokens,updated_at,source_url\r\n"
+            ),
+        )
+
+    async def test_kamino_endpoint_updates_cache_after_successful_refresh(self):
+        content = "type,vault_name\nkVault,Sentora PYUSD\n"
+        wallet = "11111111111111111111111111111111"
+
+        with patch(
+            "routers.solana._build_kamino_csv_content", new_callable=AsyncMock
+        ) as build:
+            build.return_value = content
+            response = await get_kamino_csv(wallet)
+
+        build.assert_awaited_once_with(wallet)
+        self.assertEqual(response.body.decode(), content)
+        self.assertEqual(_kamino_csv_cache[wallet], content)
+
+    async def test_kamino_endpoint_returns_cached_csv_when_refresh_fails(self):
+        wallet = "11111111111111111111111111111111"
+        cached = "type,vault_name\nkVault,cached\n"
+        _kamino_csv_cache[wallet] = cached
+
+        with patch(
+            "routers.solana._build_kamino_csv_content", new_callable=AsyncMock
+        ) as build:
+            build.side_effect = HTTPException(status_code=502)
+            response = await get_kamino_csv(wallet)
+
+        self.assertEqual(response.body.decode(), cached)
 
 
 def _write_int(data: bytearray, offset: int, value: int, length: int, signed=False):

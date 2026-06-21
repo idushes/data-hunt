@@ -3,6 +3,7 @@ import base64
 import csv
 import io
 import re
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, getcontext
 from typing import Any
 
@@ -13,6 +14,13 @@ from fastapi.responses import Response
 
 GRAPHQL_ENDPOINT = "https://gmx-solana-sqd.squids.live/gmx-solana-base:prod/api/graphql"
 SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
+SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+SPL_TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPYg4GNiiAaA6VTxPBJW"
+KAMINO_API_ENDPOINT = "https://api.kamino.finance"
+KAMINO_RESOURCES_ENDPOINT = "https://cdn.kamino.com/resources.json"
+KAMINO_SOLANA_RPC_ENDPOINT = (
+    "https://helius-rpc.kamino.com/02996efe-bbc3-405f-8d87-845794261033"
+)
 GMTRADE_RPC_ENDPOINT = "https://rpc-1.gmtrade.xyz/"
 GMTRADE_PRICE_TICKERS_ENDPOINT = (
     "https://gmtrade-web-backend.gmtrade.xyz/cache/prices/tickers"
@@ -24,6 +32,7 @@ RETRYABLE_GRAPHQL_STATUS_CODES = {502, 503, 504}
 OPTIONAL_POSITION_TIMEOUT = 8.0
 OPTIONAL_LOOKUP_TIMEOUT = 6.0
 GMTRADE_CSV_CACHE_MAX_SIZE = 256
+KAMINO_CSV_CACHE_MAX_SIZE = 256
 GMTRADE_MARKET_DECIMALS = 20
 GMTRADE_PRICE_DECIMALS = 30
 SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
@@ -67,10 +76,36 @@ GMTRADE_PERP_CSV_HEADER = [
     "raw_size_usd",
     "raw_collateral_amount",
 ]
+KAMINO_CSV_HEADER = [
+    "type",
+    "wallet",
+    "vault_address",
+    "share_mint",
+    "vault_name",
+    "share_symbol",
+    "underlying_symbol",
+    "share_balance",
+    "underlying_amount",
+    "token_price_usd",
+    "value_usd",
+    "apy",
+    "apy_7d",
+    "apy_30d",
+    "apy_90d",
+    "farm_rewards_apy",
+    "actual_apy",
+    "share_price",
+    "tokens_per_share",
+    "tokens_available",
+    "tvl_tokens",
+    "updated_at",
+    "source_url",
+]
 
 router = APIRouter(prefix="/solana", tags=["solana"])
 _gmtrade_csv_cache: dict[str, str] = {}
 _gmtrade_perp_csv_cache: dict[str, str] = {}
+_kamino_csv_cache: dict[str, str] = {}
 
 
 async def _query_graphql(client: httpx.AsyncClient, query: str) -> dict[str, Any]:
@@ -138,6 +173,47 @@ async def _rpc_request(client: httpx.AsyncClient, method: str, params: list[Any]
                 "Content-Type": "application/json",
                 "Origin": "https://gmtrade.xyz",
             },
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Solana RPC request failed: {exc}"
+        ) from exc
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Solana RPC request failed with status {response.status_code}",
+        )
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Solana RPC returned invalid JSON"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Unexpected Solana RPC response")
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message") or "Solana RPC returned an error"
+        raise HTTPException(status_code=502, detail=message)
+
+    return payload.get("result")
+
+
+async def _solana_rpc_request(
+    client: httpx.AsyncClient,
+    method: str,
+    params: list[Any],
+    endpoint: str = SOLANA_RPC_ENDPOINT,
+) -> Any:
+    try:
+        response = await client.post(
+            endpoint,
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            headers={"Content-Type": "application/json"},
         )
     except httpx.HTTPError as exc:
         raise HTTPException(
@@ -725,6 +801,334 @@ async def _fetch_asset_names(
     return names
 
 
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return result if result.is_finite() else None
+
+
+def _decimal_or_zero(value: Any) -> Decimal:
+    return _decimal_or_none(value) or Decimal(0)
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+async def _fetch_json(
+    client: httpx.AsyncClient,
+    url: str,
+    detail_prefix: str,
+    allow_404: bool = False,
+) -> Any:
+    try:
+        response = await client.get(url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"{detail_prefix}: {exc}") from exc
+
+    if allow_404 and response.status_code == 404:
+        return None
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise HTTPException(
+            status_code=502,
+            detail=f"{detail_prefix} failed with status {response.status_code}",
+        )
+
+    try:
+        return response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"{detail_prefix} returned invalid JSON"
+        ) from exc
+
+
+async def _fetch_kamino_resources(client: httpx.AsyncClient) -> dict[str, Any]:
+    payload = await _fetch_json(
+        client, KAMINO_RESOURCES_ENDPOINT, "Kamino resources request"
+    )
+    return payload if isinstance(payload, dict) else {}
+
+
+def _kamino_vault_resources(resources: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    mainnet_resources = resources.get("mainnet-beta")
+    if not isinstance(mainnet_resources, dict):
+        return {}
+
+    vaults = mainnet_resources.get("vaults")
+    return vaults if isinstance(vaults, dict) else {}
+
+
+def _normalize_kamino_vault_name(value: str | None) -> str:
+    if not value:
+        return ""
+
+    stopwords = {"k", "kv", "vault", "kvault"}
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", value.lower())
+        if token not in stopwords
+    ]
+    return " ".join(sorted(tokens))
+
+
+def _build_kamino_vault_resource_index(
+    resources: dict[str, Any],
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    index: dict[str, tuple[str, dict[str, Any]]] = {}
+    for vault_address, vault in _kamino_vault_resources(resources).items():
+        if not isinstance(vault_address, str) or not isinstance(vault, dict):
+            continue
+
+        name = vault.get("name") if isinstance(vault.get("name"), str) else ""
+        token_symbol = (
+            vault.get("tokenSymbol") if isinstance(vault.get("tokenSymbol"), str) else ""
+        )
+        candidates = [
+            name,
+            f"{token_symbol} {name}",
+            f"{name} {token_symbol}",
+            f"kVault {token_symbol} {name}",
+            f"kVault {name}",
+        ]
+
+        for candidate in candidates:
+            normalized = _normalize_kamino_vault_name(candidate)
+            if normalized and normalized not in index:
+                index[normalized] = (vault_address, vault)
+
+    return index
+
+
+def _match_kamino_vault_resource(
+    metadata: dict[str, Any],
+    resource_index: dict[str, tuple[str, dict[str, Any]]],
+) -> tuple[str, dict[str, Any]] | None:
+    for key in ("name", "symbol", "description"):
+        value = metadata.get(key)
+        if not isinstance(value, str):
+            continue
+        match = resource_index.get(_normalize_kamino_vault_name(value))
+        if match:
+            return match
+    return None
+
+
+async def _fetch_kamino_vault_token_metadata(
+    client: httpx.AsyncClient, mint: str
+) -> dict[str, Any] | None:
+    payload = await _fetch_json(
+        client,
+        f"{KAMINO_API_ENDPOINT}/kvaults/mints/{mint}/metadata",
+        "Kamino kVault metadata request",
+        allow_404=True,
+    )
+    if not isinstance(payload, dict):
+        return None
+
+    name = payload.get("name")
+    symbol = payload.get("symbol")
+    is_kvault_name = isinstance(name, str) and "kvault" in name.lower()
+    is_kvault_symbol = isinstance(symbol, str) and symbol.lower().startswith("kv")
+    if is_kvault_name or is_kvault_symbol:
+        return payload
+
+    return None
+
+
+async def _fetch_kamino_vault_metrics(
+    client: httpx.AsyncClient, vault_address: str
+) -> dict[str, Any]:
+    payload = await _fetch_json(
+        client,
+        f"{KAMINO_API_ENDPOINT}/kvaults/{vault_address}/metrics",
+        "Kamino kVault metrics request",
+        allow_404=True,
+    )
+    return payload if isinstance(payload, dict) else {}
+
+
+async def _fetch_token_accounts_by_owner(
+    client: httpx.AsyncClient, wallet: str, token_program_id: str
+) -> list[dict[str, Any]]:
+    result = await _solana_rpc_request(
+        client,
+        "getTokenAccountsByOwner",
+        [
+            wallet,
+            {"programId": token_program_id},
+            {"encoding": "jsonParsed", "commitment": "confirmed"},
+        ],
+        endpoint=KAMINO_SOLANA_RPC_ENDPOINT,
+    )
+    values = result.get("value") if isinstance(result, dict) else []
+    return values if isinstance(values, list) else []
+
+
+def _is_unrecognized_token_program_error(exc: HTTPException) -> bool:
+    detail = str(exc.detail)
+    return exc.status_code == 502 and "unrecognized Token program id" in detail
+
+
+async def _fetch_token_accounts(
+    client: httpx.AsyncClient, wallet: str
+) -> list[dict[str, Any]]:
+    token_accounts_result, token_2022_accounts_result = await asyncio.gather(
+        _fetch_token_accounts_by_owner(client, wallet, SPL_TOKEN_PROGRAM_ID),
+        _fetch_token_accounts_by_owner(client, wallet, SPL_TOKEN_2022_PROGRAM_ID),
+        return_exceptions=True,
+    )
+
+    if isinstance(token_accounts_result, Exception):
+        raise token_accounts_result
+
+    if isinstance(token_2022_accounts_result, HTTPException):
+        if _is_unrecognized_token_program_error(token_2022_accounts_result):
+            token_2022_accounts_result = []
+        else:
+            raise token_2022_accounts_result
+    elif isinstance(token_2022_accounts_result, Exception):
+        raise token_2022_accounts_result
+
+    token_accounts = token_accounts_result
+    token_2022_accounts = token_2022_accounts_result
+    return [*token_accounts, *token_2022_accounts]
+
+
+def _parse_token_account_position(item: dict[str, Any]) -> dict[str, Any] | None:
+    account = item.get("account")
+    if not isinstance(account, dict):
+        return None
+
+    data = account.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    parsed = data.get("parsed")
+    if not isinstance(parsed, dict):
+        return None
+
+    info = parsed.get("info")
+    if not isinstance(info, dict):
+        return None
+
+    token_amount = info.get("tokenAmount")
+    if not isinstance(token_amount, dict):
+        return None
+
+    mint = info.get("mint")
+    if not isinstance(mint, str) or not mint:
+        return None
+
+    balance = _decimal_or_none(token_amount.get("uiAmountString"))
+    if balance is None:
+        raw_amount = _decimal_or_none(token_amount.get("amount"))
+        decimals = token_amount.get("decimals")
+        if raw_amount is not None and isinstance(decimals, int):
+            balance = raw_amount / (Decimal(10) ** decimals)
+
+    if balance is None or balance <= 0:
+        return None
+
+    token_account = item.get("pubkey")
+    return {
+        "token_account": token_account if isinstance(token_account, str) else "",
+        "mint": mint,
+        "balance": balance,
+    }
+
+
+def _build_kamino_rows(
+    wallet: str,
+    token_positions: list[dict[str, Any]],
+    metadata_by_mint: dict[str, dict[str, Any]],
+    resources: dict[str, Any],
+    metrics_by_vault: dict[str, dict[str, Any]],
+    updated_at: str,
+) -> list[dict[str, Any]]:
+    resource_index = _build_kamino_vault_resource_index(resources)
+    rows = []
+
+    for token_position in token_positions:
+        mint = token_position["mint"]
+        metadata = metadata_by_mint.get(mint)
+        if not metadata:
+            continue
+
+        resource_match = _match_kamino_vault_resource(metadata, resource_index)
+        vault_address = resource_match[0] if resource_match else ""
+        resource = resource_match[1] if resource_match else {}
+        metrics = metrics_by_vault.get(vault_address, {})
+        balance = token_position["balance"]
+        tokens_per_share = _decimal_or_none(metrics.get("tokensPerShare"))
+        if tokens_per_share is None:
+            tokens_per_share = _decimal_or_none(metrics.get("sharePrice"))
+        token_price_usd = _decimal_or_none(metrics.get("tokenPrice"))
+        underlying_amount = (
+            balance * tokens_per_share if tokens_per_share is not None else None
+        )
+        value_usd = (
+            underlying_amount * token_price_usd
+            if underlying_amount is not None and token_price_usd is not None
+            else None
+        )
+        source_url = (
+            f"{KAMINO_API_ENDPOINT}/kvaults/{vault_address}/metrics"
+            if vault_address
+            else f"{KAMINO_API_ENDPOINT}/kvaults/mints/{mint}/metadata"
+        )
+        token_symbol = (
+            resource.get("tokenSymbol")
+            if isinstance(resource.get("tokenSymbol"), str)
+            else ""
+        )
+
+        rows.append(
+            {
+                "type": "kVault",
+                "wallet": wallet,
+                "vault_address": vault_address,
+                "share_mint": mint,
+                "vault_name": resource.get("name") or metadata.get("name") or "",
+                "share_symbol": metadata.get("symbol") or "",
+                "underlying_symbol": token_symbol,
+                "share_balance": _format_decimal(balance, 12),
+                "underlying_amount": _format_decimal(underlying_amount, 12),
+                "token_price_usd": _format_decimal(token_price_usd, 12),
+                "value_usd": _format_decimal(value_usd, 6),
+                "apy": _format_decimal(_decimal_or_none(metrics.get("apy")), 12),
+                "apy_7d": _format_decimal(_decimal_or_none(metrics.get("apy7d")), 12),
+                "apy_30d": _format_decimal(_decimal_or_none(metrics.get("apy30d")), 12),
+                "apy_90d": _format_decimal(_decimal_or_none(metrics.get("apy90d")), 12),
+                "farm_rewards_apy": _format_decimal(
+                    _decimal_or_none(metrics.get("apyFarmRewards")), 12
+                ),
+                "actual_apy": _format_decimal(
+                    _decimal_or_none(metrics.get("apyActual")), 12
+                ),
+                "share_price": _format_decimal(
+                    _decimal_or_none(metrics.get("sharePrice")), 12
+                ),
+                "tokens_per_share": _format_decimal(tokens_per_share, 12),
+                "tokens_available": _format_decimal(
+                    _decimal_or_none(metrics.get("tokensAvailable")), 6
+                ),
+                "tvl_tokens": _format_decimal(
+                    _decimal_or_none(metrics.get("tokensInvested")), 6
+                ),
+                "updated_at": updated_at,
+                "source_url": source_url,
+            }
+        )
+
+    rows.sort(key=lambda row: _decimal_or_zero(row["value_usd"]), reverse=True)
+    return rows
+
+
 async def _fetch_optional_lookup(fetcher: Any, *args: Any) -> dict[str, Any]:
     try:
         return await asyncio.wait_for(fetcher(*args), timeout=OPTIONAL_LOOKUP_TIMEOUT)
@@ -892,6 +1296,22 @@ def _set_cached_gmtrade_perp_csv(wallet: str, content: str) -> None:
     _gmtrade_perp_csv_cache[wallet] = content
 
 
+def _get_cached_kamino_csv(wallet: str) -> str | None:
+    cached = _kamino_csv_cache.get(wallet)
+    if cached is not None:
+        _kamino_csv_cache[wallet] = _kamino_csv_cache.pop(wallet)
+    return cached
+
+
+def _set_cached_kamino_csv(wallet: str, content: str) -> None:
+    if wallet in _kamino_csv_cache:
+        _kamino_csv_cache.pop(wallet)
+    elif len(_kamino_csv_cache) >= KAMINO_CSV_CACHE_MAX_SIZE:
+        _kamino_csv_cache.pop(next(iter(_kamino_csv_cache)))
+
+    _kamino_csv_cache[wallet] = content
+
+
 def _render_gmtrade_csv(rows: list[dict[str, Any]]) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
@@ -923,6 +1343,17 @@ def _render_gmtrade_perp_csv(rows: list[dict[str, Any]]) -> str:
 
     for row in rows:
         writer.writerow([row.get(header, "") for header in GMTRADE_PERP_CSV_HEADER])
+
+    return output.getvalue()
+
+
+def _render_kamino_csv(rows: list[dict[str, Any]]) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(KAMINO_CSV_HEADER)
+
+    for row in rows:
+        writer.writerow([row.get(header, "") for header in KAMINO_CSV_HEADER])
 
     return output.getvalue()
 
@@ -986,6 +1417,58 @@ async def _build_gmtrade_perp_csv_content(normalized_wallet: str) -> str:
     return _render_gmtrade_perp_csv(rows)
 
 
+async def _build_kamino_csv_content(normalized_wallet: str) -> str:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resources, token_accounts = await asyncio.gather(
+            _fetch_kamino_resources(client),
+            _fetch_token_accounts(client, normalized_wallet),
+        )
+        token_positions = [
+            parsed
+            for parsed in (
+                _parse_token_account_position(account) for account in token_accounts
+            )
+            if parsed is not None
+        ]
+
+        unique_mints = _collect_unique_mints(token_positions, "mint")
+        metadata_results = await asyncio.gather(
+            *(
+                _fetch_kamino_vault_token_metadata(client, mint)
+                for mint in unique_mints
+            )
+        )
+        metadata_by_mint = {
+            mint: metadata
+            for mint, metadata in zip(unique_mints, metadata_results, strict=False)
+            if metadata is not None
+        }
+        resource_index = _build_kamino_vault_resource_index(resources)
+        vault_addresses = []
+        for metadata in metadata_by_mint.values():
+            resource_match = _match_kamino_vault_resource(metadata, resource_index)
+            if resource_match and resource_match[0] not in vault_addresses:
+                vault_addresses.append(resource_match[0])
+
+        metrics_results = await asyncio.gather(
+            *(
+                _fetch_kamino_vault_metrics(client, vault_address)
+                for vault_address in vault_addresses
+            )
+        )
+        metrics_by_vault = dict(zip(vault_addresses, metrics_results, strict=False))
+
+    rows = _build_kamino_rows(
+        normalized_wallet,
+        token_positions,
+        metadata_by_mint,
+        resources,
+        metrics_by_vault,
+        _now_iso(),
+    )
+    return _render_kamino_csv(rows)
+
+
 @router.get(
     "/gmtrade.csv",
     summary="Export Solana GMTrade assets for Google Sheets",
@@ -1013,6 +1496,39 @@ async def get_gmtrade_csv(
             content = _render_gmtrade_csv([])
     else:
         _set_cached_gmtrade_csv(normalized_wallet, content)
+
+    return Response(content=content, media_type="text/csv")
+
+
+@router.get(
+    "/kamino.csv",
+    summary="Export Solana Kamino kVault positions for Google Sheets",
+    description=(
+        "Returns a CSV table with positive Kamino kVault share-token positions "
+        "for a Solana wallet address. Suitable for Google Sheets IMPORTDATA."
+    ),
+    responses={200: {"content": {"text/csv": {}}}},
+)
+async def get_kamino_csv(
+    wallet: str = Query(..., description="Solana wallet address"),
+):
+    normalized_wallet = wallet.strip()
+    if not normalized_wallet:
+        raise HTTPException(status_code=400, detail="wallet is required")
+    if not _is_solana_address(normalized_wallet):
+        raise HTTPException(status_code=400, detail="invalid Solana wallet address")
+
+    try:
+        content = await _build_kamino_csv_content(normalized_wallet)
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+
+        content = _get_cached_kamino_csv(normalized_wallet)
+        if content is None:
+            content = _render_kamino_csv([])
+    else:
+        _set_cached_kamino_csv(normalized_wallet, content)
 
     return Response(content=content, media_type="text/csv")
 
