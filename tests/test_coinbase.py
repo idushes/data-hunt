@@ -5,9 +5,11 @@ from fastapi import HTTPException
 
 from routers.coinbase import (
     COINBASE_ACCOUNTS_PATH,
+    COINBASE_PORTFOLIOS_PATH,
     _build_auth_header,
     _build_coinbase_jwt,
     _fetch_coinbase_accounts,
+    _fetch_coinbase_portfolio_breakdowns,
     _next_page_params,
     _render_coinbase_csv,
     get_coinbase_balance,
@@ -134,6 +136,52 @@ class CoinbaseFetchAccountsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.status_code, 502)
 
 
+class CoinbasePortfolioBreakdownTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fetches_intx_portfolio_breakdowns(self):
+        client = FakeCoinbaseClient(
+            [
+                FakeCoinbaseResponse(
+                    {
+                        "portfolios": [
+                            {
+                                "uuid": "portfolio-1",
+                                "name": "Perpetuals",
+                                "deleted": False,
+                            }
+                        ]
+                    }
+                ),
+                FakeCoinbaseResponse(
+                    {
+                        "breakdown": {
+                            "portfolio": {
+                                "uuid": "portfolio-1",
+                                "name": "Perpetuals",
+                            },
+                            "spot_positions": [],
+                            "perp_positions": [],
+                        }
+                    }
+                ),
+            ]
+        )
+
+        result = await _fetch_coinbase_portfolio_breakdowns(
+            client, "Bearer token", None, None
+        )
+
+        self.assertEqual(result[0]["portfolio"]["name"], "Perpetuals")
+        self.assertEqual(client.requests[0]["url"].endswith(COINBASE_PORTFOLIOS_PATH), True)
+        self.assertEqual(
+            client.requests[0]["params"],
+            {"portfolio_type": "INTX"},
+        )
+        self.assertEqual(
+            client.requests[1]["url"].endswith(f"{COINBASE_PORTFOLIOS_PATH}/portfolio-1"),
+            True,
+        )
+
+
 class CoinbaseCsvTest(unittest.TestCase):
     def test_renders_positive_balances_by_default(self):
         content = _render_coinbase_csv(
@@ -162,10 +210,11 @@ class CoinbaseCsvTest(unittest.TestCase):
                     "balance": {"amount": "0", "currency": "ZERO"},
                 },
             ],
+            [],
             include_zero=False,
         )
 
-        self.assertIn("btc-account,BTC Wallet,BTC,Bitcoin,crypto,1.2,BTC", content)
+        self.assertIn("account,btc-account,BTC Wallet,BTC,Bitcoin,crypto,1.2,BTC", content)
         self.assertNotIn("zero-account", content)
 
     def test_can_include_zero_balances(self):
@@ -177,10 +226,83 @@ class CoinbaseCsvTest(unittest.TestCase):
                     "balance": {"amount": "0", "currency": "ZERO"},
                 },
             ],
+            [],
             include_zero=True,
         )
 
-        self.assertIn("zero-account,,ZERO,,,0,ZERO", content)
+        self.assertIn("account,zero-account,,ZERO,,,0,ZERO", content)
+
+    def test_renders_portfolio_balances_spot_and_perp_positions(self):
+        content = _render_coinbase_csv(
+            [],
+            [
+                {
+                    "portfolio": {
+                        "uuid": "portfolio-1",
+                        "name": "Perpetuals",
+                    },
+                    "portfolio_balances": {
+                        "total_cash_equivalent_balance": {
+                            "value": "80253.34",
+                            "currency": "USD",
+                        }
+                    },
+                    "spot_positions": [
+                        {
+                            "asset": "USDC",
+                            "account_uuid": "usdc-account",
+                            "total_balance_crypto": "80253.341573",
+                            "total_balance_fiat": "80253.34",
+                            "available_to_trade_crypto": "80253.341573",
+                            "account_type": "ACCOUNT_TYPE_CRYPTO",
+                            "is_cash": True,
+                        }
+                    ],
+                    "perp_positions": [
+                        {
+                            "product_uuid": "btc-perp",
+                            "product_id": "BTC-PERP",
+                            "symbol": "BTC PERP",
+                            "net_size": "0.1751",
+                            "position_side": "LONG",
+                            "position_notional": {
+                                "rawCurrency": {
+                                    "value": "11237.6",
+                                    "currency": "USDC",
+                                }
+                            },
+                            "vwap": {
+                                "rawCurrency": {
+                                    "value": "62563.3",
+                                    "currency": "USDC",
+                                }
+                            },
+                            "mark_price": {
+                                "rawCurrency": {
+                                    "value": "64178.2",
+                                    "currency": "USDC",
+                                }
+                            },
+                            "unrealized_pnl": {
+                                "rawCurrency": {
+                                    "value": "283.90",
+                                    "currency": "USDC",
+                                }
+                            },
+                            "im_contribution": "1422.3",
+                            "leverage": "10",
+                            "margin_type": "CROSS",
+                        }
+                    ],
+                }
+            ],
+            include_zero=False,
+        )
+
+        self.assertIn("portfolio_balance,portfolio-1:total_cash_equivalent_balance", content)
+        self.assertIn("spot_position,usdc-account,USDC,USDC,,cash,80253.341573,USDC", content)
+        self.assertIn("perp_position,btc-perp,BTC PERP,BTC,BTC-PERP,perp,0.1751,BTC", content)
+        self.assertIn(",LONG,62563.3,64178.2,283.90,1422.3,10,", content)
 
 
 class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
@@ -198,12 +320,18 @@ class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
             patch(
                 "routers.coinbase._fetch_coinbase_accounts", new_callable=AsyncMock
             ) as fetch,
+            patch(
+                "routers.coinbase._fetch_coinbase_portfolio_breakdowns",
+                new_callable=AsyncMock,
+            ) as fetch_portfolios,
         ):
             build_auth.return_value = {"Authorization": "Bearer token"}
             fetch.return_value = accounts
+            fetch_portfolios.return_value = []
             response = await get_coinbase_balance("token")
 
         build_auth.assert_called_once()
         fetch.assert_awaited_once()
+        fetch_portfolios.assert_awaited_once()
         self.assertEqual(response.media_type, "text/csv")
         self.assertIn("btc-account", response.body.decode())
