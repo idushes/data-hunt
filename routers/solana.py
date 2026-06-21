@@ -1,6 +1,9 @@
 import asyncio
+import base64
 import csv
 import io
+import re
+from decimal import Decimal, InvalidOperation, getcontext
 from typing import Any
 
 import httpx
@@ -10,10 +13,22 @@ from fastapi.responses import Response
 
 GRAPHQL_ENDPOINT = "https://gmx-solana-sqd.squids.live/gmx-solana-base:prod/api/graphql"
 SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
+GMTRADE_RPC_ENDPOINT = "https://rpc-1.gmtrade.xyz/"
+GMTRADE_PRICE_TICKERS_ENDPOINT = (
+    "https://gmtrade-web-backend.gmtrade.xyz/cache/prices/tickers"
+)
+GMTRADE_STORE_PROGRAM_ID = "Gmso1uvJnLbawvw7yezdfCDcPydwW2s2iqG3w6MDucLo"
+GMTRADE_STORE_ADDRESS = "CTDLvGGXnoxvqLyTpGzdGLg9pD6JexKxKXSV8tqqo8bN"
+GMTRADE_POSITION_DISCRIMINATOR = "VZMoMoKgZQb"
 RETRYABLE_GRAPHQL_STATUS_CODES = {502, 503, 504}
 OPTIONAL_POSITION_TIMEOUT = 8.0
 OPTIONAL_LOOKUP_TIMEOUT = 6.0
 GMTRADE_CSV_CACHE_MAX_SIZE = 256
+GMTRADE_MARKET_DECIMALS = 20
+GMTRADE_PRICE_DECIMALS = 30
+SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+getcontext().prec = 50
 GMTRADE_CSV_HEADER = [
     "type",
     "mint",
@@ -26,9 +41,36 @@ GMTRADE_CSV_HEADER = [
     "index_token_mint",
     "updated_at",
 ]
+GMTRADE_PERP_CSV_HEADER = [
+    "position_address",
+    "market",
+    "side",
+    "size_usd",
+    "net_value_usd_estimated",
+    "collateral_usd",
+    "collateral_amount",
+    "collateral_symbol",
+    "entry_price_usd",
+    "mark_price_usd",
+    "pnl_usd_estimated",
+    "leverage_estimated",
+    "market_token_mint",
+    "index_token_mint",
+    "collateral_token_mint",
+    "owner",
+    "created_at",
+    "increased_at",
+    "decreased_at",
+    "updated_at_slot",
+    "trade_id",
+    "size_in_tokens",
+    "raw_size_usd",
+    "raw_collateral_amount",
+]
 
 router = APIRouter(prefix="/solana", tags=["solana"])
 _gmtrade_csv_cache: dict[str, str] = {}
+_gmtrade_perp_csv_cache: dict[str, str] = {}
 
 
 async def _query_graphql(client: httpx.AsyncClient, query: str) -> dict[str, Any]:
@@ -85,6 +127,394 @@ async def _query_graphql(client: httpx.AsyncClient, query: str) -> dict[str, Any
         raise HTTPException(status_code=502, detail="GMTrade response is missing data")
 
     return data
+
+
+async def _rpc_request(client: httpx.AsyncClient, method: str, params: list[Any]) -> Any:
+    try:
+        response = await client.post(
+            GMTRADE_RPC_ENDPOINT,
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://gmtrade.xyz",
+            },
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Solana RPC request failed: {exc}"
+        ) from exc
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Solana RPC request failed with status {response.status_code}",
+        )
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Solana RPC returned invalid JSON"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Unexpected Solana RPC response")
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message") or "Solana RPC returned an error"
+        raise HTTPException(status_code=502, detail=message)
+
+    return payload.get("result")
+
+
+def _base58_decode(value: str) -> bytes:
+    number = 0
+    for char in value:
+        index = BASE58_ALPHABET.find(char)
+        if index < 0:
+            raise ValueError("invalid base58 character")
+        number = number * 58 + index
+
+    data = number.to_bytes((number.bit_length() + 7) // 8, "big") if number else b""
+    leading_zeroes = len(value) - len(value.lstrip(BASE58_ALPHABET[0]))
+    return b"\x00" * leading_zeroes + data
+
+
+def _base58_encode(data: bytes) -> str:
+    number = int.from_bytes(data, "big")
+    encoded = ""
+
+    while number:
+        number, remainder = divmod(number, 58)
+        encoded = BASE58_ALPHABET[remainder] + encoded
+
+    leading_zeroes = len(data) - len(data.lstrip(b"\x00"))
+    return BASE58_ALPHABET[0] * leading_zeroes + (encoded or "")
+
+
+def _is_solana_address(value: str) -> bool:
+    if not SOLANA_ADDRESS_RE.match(value):
+        return False
+
+    try:
+        return len(_base58_decode(value)) == 32
+    except ValueError:
+        return False
+
+
+def _read_u64_le(data: bytes, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 8], "little", signed=False)
+
+
+def _read_i64_le(data: bytes, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 8], "little", signed=True)
+
+
+def _read_u128_le(data: bytes, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 16], "little", signed=False)
+
+
+def _read_pubkey(data: bytes, offset: int) -> str:
+    return _base58_encode(data[offset : offset + 32])
+
+
+def _decode_rpc_account_data(value: Any) -> bytes:
+    if isinstance(value, list) and value:
+        value = value[0]
+    if not isinstance(value, str):
+        return b""
+
+    try:
+        return base64.b64decode(value)
+    except Exception:
+        return b""
+
+
+def _unix_timestamp(value: int) -> str:
+    if value <= 0:
+        return ""
+    return str(value)
+
+
+def _decimal_scale(value: int | str | None, decimals: int) -> Decimal:
+    if value is None:
+        return Decimal(0)
+    try:
+        return Decimal(value) / (Decimal(10) ** decimals)
+    except (InvalidOperation, ValueError):
+        return Decimal(0)
+
+
+def _format_decimal(value: Decimal | None, places: int = 10) -> str:
+    if value is None or not value.is_finite():
+        return ""
+
+    quantized = value.quantize(Decimal(1).scaleb(-places)).normalize()
+    if quantized == 0:
+        return "0"
+    return format(quantized, "f")
+
+
+def _safe_decimal_divide(numerator: Decimal, denominator: Decimal) -> Decimal | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def _decode_gmtrade_perp_position(
+    address: str, data: bytes
+) -> dict[str, Any] | None:
+    if len(data) < 296:
+        return None
+
+    size_in_usd = _read_u128_le(data, 216)
+    if size_in_usd <= 0:
+        return None
+
+    kind = data[42]
+    if kind not in {1, 2}:
+        return None
+
+    return {
+        "position_address": address,
+        "side": "long" if kind == 1 else "short",
+        "store": _read_pubkey(data, 10),
+        "owner": _read_pubkey(data, 56),
+        "market_token_mint": _read_pubkey(data, 88),
+        "collateral_token_mint": _read_pubkey(data, 120),
+        "created_at": _unix_timestamp(_read_i64_le(data, 48)),
+        "trade_id": _read_u64_le(data, 152),
+        "increased_at": _unix_timestamp(_read_i64_le(data, 160)),
+        "updated_at_slot": _read_u64_le(data, 168),
+        "decreased_at": _unix_timestamp(_read_i64_le(data, 176)),
+        "raw_size_in_tokens": _read_u128_le(data, 184),
+        "raw_collateral_amount": _read_u128_le(data, 200),
+        "raw_size_usd": size_in_usd,
+        "raw_borrowing_factor": _read_u128_le(data, 232),
+        "raw_funding_fee_amount_per_size": _read_u128_le(data, 248),
+    }
+
+
+async def _fetch_gmtrade_perp_positions(
+    client: httpx.AsyncClient, wallet: str
+) -> list[dict[str, Any]]:
+    result = await _rpc_request(
+        client,
+        "getProgramAccounts",
+        [
+            GMTRADE_STORE_PROGRAM_ID,
+            {
+                "encoding": "base64",
+                "commitment": "confirmed",
+                "filters": [
+                    {"memcmp": {"offset": 0, "bytes": GMTRADE_POSITION_DISCRIMINATOR}},
+                    {"memcmp": {"offset": 10, "bytes": GMTRADE_STORE_ADDRESS}},
+                    {"memcmp": {"offset": 56, "bytes": wallet}},
+                ],
+            },
+        ],
+    )
+
+    accounts = result if isinstance(result, list) else []
+    positions = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        address = account.get("pubkey")
+        account_data = (account.get("account") or {}).get("data")
+        if not isinstance(address, str):
+            continue
+        decoded = _decode_gmtrade_perp_position(
+            address, _decode_rpc_account_data(account_data)
+        )
+        if decoded:
+            positions.append(decoded)
+
+    return positions
+
+
+def _chunked(values: list[str], size: int) -> list[list[str]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
+
+
+async def _fetch_token_decimals(
+    client: httpx.AsyncClient, mints: list[str]
+) -> dict[str, int]:
+    if not mints:
+        return {}
+
+    decimals: dict[str, int] = {}
+    for chunk in _chunked(mints, 100):
+        result = await _rpc_request(
+            client,
+            "getMultipleAccounts",
+            [chunk, {"encoding": "base64", "commitment": "confirmed"}],
+        )
+        values = result.get("value") if isinstance(result, dict) else []
+        if not isinstance(values, list):
+            continue
+
+        for mint, item in zip(chunk, values, strict=False):
+            if not isinstance(item, dict):
+                continue
+            data = _decode_rpc_account_data(item.get("data"))
+            if len(data) > 44:
+                decimals[mint] = data[44]
+
+    return decimals
+
+
+async def _fetch_gmtrade_price_tickers(
+    client: httpx.AsyncClient,
+) -> dict[str, dict[str, Any]]:
+    try:
+        response = await client.get(GMTRADE_PRICE_TICKERS_ENDPOINT)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"GMTrade ticker request failed: {exc}"
+        ) from exc
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise HTTPException(
+            status_code=502,
+            detail=f"GMTrade ticker request failed with status {response.status_code}",
+        )
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="GMTrade ticker response is invalid JSON"
+        ) from exc
+
+    if not isinstance(payload, list):
+        return {}
+
+    result = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        address = item.get("tokenAddress")
+        if isinstance(address, str) and address:
+            result[address] = item
+    return result
+
+
+def _ticker_price_usd(
+    tickers: dict[str, dict[str, Any]], token: str, decimals: int | None
+) -> Decimal | None:
+    ticker = tickers.get(token)
+    if not ticker or decimals is None:
+        return None
+
+    min_price = ticker.get("minPrice")
+    max_price = ticker.get("maxPrice")
+    if min_price is None and max_price is None:
+        return None
+
+    prices = []
+    for value in (min_price, max_price):
+        if value is None:
+            continue
+        try:
+            prices.append(Decimal(value))
+        except (InvalidOperation, ValueError):
+            continue
+
+    if not prices:
+        return None
+
+    raw_price = sum(prices) / Decimal(len(prices))
+    scale = GMTRADE_PRICE_DECIMALS - decimals
+    if scale < 0:
+        return None
+    return raw_price / (Decimal(10) ** scale)
+
+
+def _build_gmtrade_perp_rows(
+    positions: list[dict[str, Any]],
+    market_infos: dict[str, dict[str, Any]],
+    token_decimals: dict[str, int],
+    tickers: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = []
+    for position in positions:
+        market_token = position["market_token_mint"]
+        collateral_token = position["collateral_token_mint"]
+        market = market_infos.get(market_token, {})
+        index_token = market.get("indexTokenMint") or ""
+        index_decimals = token_decimals.get(index_token)
+        collateral_decimals = token_decimals.get(collateral_token)
+        size_usd = _decimal_scale(
+            position["raw_size_usd"], GMTRADE_MARKET_DECIMALS
+        )
+        size_in_tokens = (
+            _decimal_scale(position["raw_size_in_tokens"], index_decimals)
+            if index_decimals is not None
+            else Decimal(0)
+        )
+        collateral_amount = (
+            _decimal_scale(position["raw_collateral_amount"], collateral_decimals)
+            if collateral_decimals is not None
+            else Decimal(0)
+        )
+        entry_price = _safe_decimal_divide(size_usd, size_in_tokens)
+        mark_price = _ticker_price_usd(tickers, index_token, index_decimals)
+        collateral_price = _ticker_price_usd(
+            tickers, collateral_token, collateral_decimals
+        )
+        collateral_usd = (
+            collateral_amount * collateral_price
+            if collateral_price is not None
+            else Decimal(0)
+        )
+        pnl = None
+        if entry_price is not None and mark_price is not None:
+            direction = Decimal(1) if position["side"] == "long" else Decimal(-1)
+            pnl = (mark_price - entry_price) * size_in_tokens * direction
+        net_value = collateral_usd + pnl if pnl is not None else None
+        leverage = (
+            _safe_decimal_divide(size_usd, net_value)
+            if net_value is not None and net_value > 0
+            else None
+        )
+        collateral_symbol = tickers.get(collateral_token, {}).get("tokenSymbol") or ""
+
+        rows.append(
+            {
+                "position_address": position["position_address"],
+                "market": market.get("name") or market_token,
+                "side": position["side"],
+                "size_usd": _format_decimal(size_usd, 6),
+                "net_value_usd_estimated": _format_decimal(net_value, 6),
+                "collateral_usd": _format_decimal(collateral_usd, 6),
+                "collateral_amount": _format_decimal(collateral_amount, 10),
+                "collateral_symbol": collateral_symbol,
+                "entry_price_usd": _format_decimal(entry_price, 10),
+                "mark_price_usd": _format_decimal(mark_price, 10),
+                "pnl_usd_estimated": _format_decimal(pnl, 6),
+                "leverage_estimated": _format_decimal(leverage, 6),
+                "market_token_mint": market_token,
+                "index_token_mint": index_token,
+                "collateral_token_mint": collateral_token,
+                "owner": position["owner"],
+                "created_at": position["created_at"],
+                "increased_at": position["increased_at"],
+                "decreased_at": position["decreased_at"],
+                "updated_at_slot": position["updated_at_slot"],
+                "trade_id": position["trade_id"],
+                "size_in_tokens": _format_decimal(size_in_tokens, 10),
+                "raw_size_usd": position["raw_size_usd"],
+                "raw_collateral_amount": position["raw_collateral_amount"],
+            }
+        )
+
+    rows.sort(
+        key=lambda row: Decimal(str(row["size_usd"] or "0")),
+        reverse=True,
+    )
+    return rows
 
 
 def _quote_list(values: list[str]) -> str:
@@ -446,6 +876,22 @@ def _set_cached_gmtrade_csv(wallet: str, content: str) -> None:
     _gmtrade_csv_cache[wallet] = content
 
 
+def _get_cached_gmtrade_perp_csv(wallet: str) -> str | None:
+    cached = _gmtrade_perp_csv_cache.get(wallet)
+    if cached is not None:
+        _gmtrade_perp_csv_cache[wallet] = _gmtrade_perp_csv_cache.pop(wallet)
+    return cached
+
+
+def _set_cached_gmtrade_perp_csv(wallet: str, content: str) -> None:
+    if wallet in _gmtrade_perp_csv_cache:
+        _gmtrade_perp_csv_cache.pop(wallet)
+    elif len(_gmtrade_perp_csv_cache) >= GMTRADE_CSV_CACHE_MAX_SIZE:
+        _gmtrade_perp_csv_cache.pop(next(iter(_gmtrade_perp_csv_cache)))
+
+    _gmtrade_perp_csv_cache[wallet] = content
+
+
 def _render_gmtrade_csv(rows: list[dict[str, Any]]) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
@@ -466,6 +912,17 @@ def _render_gmtrade_csv(rows: list[dict[str, Any]]) -> str:
                 row["updated_at"],
             ]
         )
+
+    return output.getvalue()
+
+
+def _render_gmtrade_perp_csv(rows: list[dict[str, Any]]) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(GMTRADE_PERP_CSV_HEADER)
+
+    for row in rows:
+        writer.writerow([row.get(header, "") for header in GMTRADE_PERP_CSV_HEADER])
 
     return output.getvalue()
 
@@ -496,6 +953,39 @@ async def _build_gmtrade_csv_content(normalized_wallet: str) -> str:
     return _render_gmtrade_csv(rows)
 
 
+async def _build_gmtrade_perp_csv_content(normalized_wallet: str) -> str:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        positions = await _fetch_gmtrade_perp_positions(client, normalized_wallet)
+        market_mints = _collect_unique_mints(positions, "market_token_mint")
+        market_infos = await _fetch_required_lookup(
+            _fetch_market_infos, client, market_mints
+        )
+        token_mints = _collect_unique_mints(
+            [
+                *positions,
+                *[
+                    {"token": info.get("indexTokenMint", "")}
+                    for info in market_infos.values()
+                ],
+            ],
+            "token",
+        )
+        token_mints.extend(
+            mint
+            for mint in _collect_unique_mints(positions, "collateral_token_mint")
+            if mint not in token_mints
+        )
+        token_decimals, tickers = await asyncio.gather(
+            _fetch_required_lookup(_fetch_token_decimals, client, token_mints),
+            _fetch_required_lookup(_fetch_gmtrade_price_tickers, client),
+        )
+
+    rows = _build_gmtrade_perp_rows(
+        positions, market_infos, token_decimals, tickers
+    )
+    return _render_gmtrade_perp_csv(rows)
+
+
 @router.get(
     "/gmtrade.csv",
     summary="Export Solana GMTrade assets for Google Sheets",
@@ -523,5 +1013,38 @@ async def get_gmtrade_csv(
             content = _render_gmtrade_csv([])
     else:
         _set_cached_gmtrade_csv(normalized_wallet, content)
+
+    return Response(content=content, media_type="text/csv")
+
+
+@router.get(
+    "/gmtrade-perps.csv",
+    summary="Export Solana GMTrade perp positions for Google Sheets",
+    description=(
+        "Returns a CSV table with open GMTrade perp positions for a Solana wallet "
+        "address. Suitable for Google Sheets IMPORTDATA."
+    ),
+    responses={200: {"content": {"text/csv": {}}}},
+)
+async def get_gmtrade_perps_csv(
+    wallet: str = Query(..., description="Solana wallet address"),
+):
+    normalized_wallet = wallet.strip()
+    if not normalized_wallet:
+        raise HTTPException(status_code=400, detail="wallet is required")
+    if not _is_solana_address(normalized_wallet):
+        raise HTTPException(status_code=400, detail="invalid Solana wallet address")
+
+    try:
+        content = await _build_gmtrade_perp_csv_content(normalized_wallet)
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+
+        content = _get_cached_gmtrade_perp_csv(normalized_wallet)
+        if content is None:
+            content = _render_gmtrade_perp_csv([])
+    else:
+        _set_cached_gmtrade_perp_csv(normalized_wallet, content)
 
     return Response(content=content, media_type="text/csv")

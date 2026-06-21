@@ -6,12 +6,21 @@ import httpx
 from fastapi import HTTPException
 
 from routers.solana import (
+    GMTRADE_MARKET_DECIMALS,
+    GMTRADE_PRICE_DECIMALS,
+    _base58_encode,
+    _build_gmtrade_perp_rows,
+    _decode_gmtrade_perp_position,
     _gmtrade_csv_cache,
+    _gmtrade_perp_csv_cache,
     _fetch_market_infos,
     _fetch_optional_lookup,
     _fetch_optional_positions,
     _filter_positive_balance_items,
+    _render_gmtrade_perp_csv,
+    _rpc_request,
     get_gmtrade_csv,
+    get_gmtrade_perps_csv,
 )
 
 
@@ -165,3 +174,163 @@ class GmtradeCsvCacheTest(unittest.IsolatedAsyncioTestCase):
                 "short_token_mint,index_token_mint,updated_at\r\n"
             ),
         )
+
+
+def _write_int(data: bytearray, offset: int, value: int, length: int, signed=False):
+    data[offset : offset + length] = value.to_bytes(length, "little", signed=signed)
+
+
+class GmtradePerpCsvTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _gmtrade_perp_csv_cache.clear()
+
+    def tearDown(self):
+        _gmtrade_perp_csv_cache.clear()
+
+    def test_decodes_open_perp_position_account(self):
+        data = bytearray(296)
+        owner = bytes([1]) * 32
+        market_token = bytes([2]) * 32
+        collateral_token = bytes([3]) * 32
+        data[42] = 1
+        data[56:88] = owner
+        data[88:120] = market_token
+        data[120:152] = collateral_token
+        _write_int(data, 48, 1_700_000_000, 8, signed=True)
+        _write_int(data, 152, 42, 8)
+        _write_int(data, 160, 1_700_000_100, 8, signed=True)
+        _write_int(data, 168, 123_456, 8)
+        _write_int(data, 184, 2 * 10**8, 16)
+        _write_int(data, 200, 20_000 * 10**6, 16)
+        _write_int(data, 216, 100_000 * 10**GMTRADE_MARKET_DECIMALS, 16)
+
+        decoded = _decode_gmtrade_perp_position("position-a", bytes(data))
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded["position_address"], "position-a")
+        self.assertEqual(decoded["side"], "long")
+        self.assertEqual(decoded["owner"], _base58_encode(owner))
+        self.assertEqual(decoded["market_token_mint"], _base58_encode(market_token))
+        self.assertEqual(decoded["collateral_token_mint"], _base58_encode(collateral_token))
+        self.assertEqual(decoded["raw_size_in_tokens"], 2 * 10**8)
+        self.assertEqual(decoded["raw_size_usd"], 100_000 * 10**GMTRADE_MARKET_DECIMALS)
+
+    def test_builds_perp_rows_with_estimated_values(self):
+        market_token = _base58_encode(bytes([2]) * 32)
+        collateral_token = _base58_encode(bytes([3]) * 32)
+        index_token = _base58_encode(bytes([4]) * 32)
+        positions = [
+            {
+                "position_address": "position-a",
+                "side": "long",
+                "owner": "wallet-a",
+                "market_token_mint": market_token,
+                "collateral_token_mint": collateral_token,
+                "created_at": "1700000000",
+                "increased_at": "1700000100",
+                "decreased_at": "",
+                "updated_at_slot": 123456,
+                "trade_id": 42,
+                "raw_size_in_tokens": 2 * 10**8,
+                "raw_collateral_amount": 20_000 * 10**6,
+                "raw_size_usd": 100_000 * 10**GMTRADE_MARKET_DECIMALS,
+            }
+        ]
+        market_infos = {
+            market_token: {
+                "name": "BTC/USD",
+                "indexTokenMint": index_token,
+            }
+        }
+        token_decimals = {
+            index_token: 8,
+            collateral_token: 6,
+        }
+        tickers = {
+            index_token: {
+                "tokenSymbol": "BTC",
+                "minPrice": str(50_000 * 10 ** (GMTRADE_PRICE_DECIMALS - 8)),
+                "maxPrice": str(50_000 * 10 ** (GMTRADE_PRICE_DECIMALS - 8)),
+            },
+            collateral_token: {
+                "tokenSymbol": "USDC",
+                "minPrice": str(10 ** (GMTRADE_PRICE_DECIMALS - 6)),
+                "maxPrice": str(10 ** (GMTRADE_PRICE_DECIMALS - 6)),
+            },
+        }
+
+        rows = _build_gmtrade_perp_rows(
+            positions, market_infos, token_decimals, tickers
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["market"], "BTC/USD")
+        self.assertEqual(rows[0]["size_usd"], "100000")
+        self.assertEqual(rows[0]["entry_price_usd"], "50000")
+        self.assertEqual(rows[0]["mark_price_usd"], "50000")
+        self.assertEqual(rows[0]["pnl_usd_estimated"], "0")
+        self.assertEqual(rows[0]["collateral_usd"], "20000")
+        self.assertEqual(rows[0]["leverage_estimated"], "5")
+
+    def test_renders_empty_perp_csv(self):
+        self.assertEqual(
+            _render_gmtrade_perp_csv([]),
+            (
+                "position_address,market,side,size_usd,net_value_usd_estimated,"
+                "collateral_usd,collateral_amount,collateral_symbol,entry_price_usd,"
+                "mark_price_usd,pnl_usd_estimated,leverage_estimated,"
+                "market_token_mint,index_token_mint,collateral_token_mint,owner,"
+                "created_at,increased_at,decreased_at,updated_at_slot,trade_id,"
+                "size_in_tokens,raw_size_usd,raw_collateral_amount\r\n"
+            ),
+        )
+
+    async def test_perp_endpoint_updates_cache_after_successful_refresh(self):
+        content = "position_address,market\nposition-a,BTC/USD\n"
+
+        with patch(
+            "routers.solana._build_gmtrade_perp_csv_content",
+            new_callable=AsyncMock,
+        ) as build:
+            build.return_value = content
+            response = await get_gmtrade_perps_csv(
+                "11111111111111111111111111111111"
+            )
+
+        build.assert_awaited_once_with("11111111111111111111111111111111")
+        self.assertEqual(response.body.decode(), content)
+        self.assertEqual(
+            _gmtrade_perp_csv_cache["11111111111111111111111111111111"],
+            content,
+        )
+
+    async def test_perp_endpoint_returns_cached_csv_when_refresh_fails(self):
+        cached = "position_address,market\nposition-a,BTC/USD\n"
+        _gmtrade_perp_csv_cache["11111111111111111111111111111111"] = cached
+
+        with patch(
+            "routers.solana._build_gmtrade_perp_csv_content",
+            new_callable=AsyncMock,
+        ) as build:
+            build.side_effect = HTTPException(status_code=502)
+            response = await get_gmtrade_perps_csv(
+                "11111111111111111111111111111111"
+            )
+
+        self.assertEqual(response.body.decode(), cached)
+
+    async def test_rpc_request_sends_gmtrade_origin_header(self):
+        seen_headers = {}
+
+        def handler(request):
+            seen_headers["origin"] = request.headers.get("origin")
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": 1, "result": "ok"},
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            result = await _rpc_request(client, "getHealth", [])
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(seen_headers["origin"], "https://gmtrade.xyz")
