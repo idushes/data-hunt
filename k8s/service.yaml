@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-hunt-service
+  namespace: agents
+  labels:
+    app: data-hunt
+spec:
+  ports:
+  - port: 80
+    targetPort: 8111
+    protocol: TCP
+  selector:
+    app: data-hunt
