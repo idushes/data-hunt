@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import unittest
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -9,12 +10,18 @@ from fastapi import HTTPException
 from routers.solana import (
     GMTRADE_MARKET_DECIMALS,
     GMTRADE_PRICE_DECIMALS,
+    KAMINO_FARM_USER_STATE_DISCRIMINATOR,
+    KAMINO_FARMS_PROGRAM_ID,
+    KAMINO_VAULT_PROGRAM_ID,
+    KAMINO_VAULT_STATE_DISCRIMINATOR,
     SPL_TOKEN_2022_PROGRAM_ID,
     SPL_TOKEN_PROGRAM_ID,
     _base58_encode,
     _build_kamino_rows,
+    _build_kamino_vault_token_positions,
     _build_gmtrade_perp_rows,
     _decode_gmtrade_perp_position,
+    _derive_kamino_farm_user_state_address,
     _is_solana_address,
     _kamino_csv_cache,
     _gmtrade_csv_cache,
@@ -25,6 +32,8 @@ from routers.solana import (
     _fetch_token_accounts,
     _filter_positive_balance_items,
     _normalize_kamino_vault_name,
+    _parse_kamino_farm_staked_shares,
+    _parse_kamino_vault_state,
     _render_kamino_csv,
     _render_gmtrade_perp_csv,
     _rpc_request,
@@ -269,6 +278,84 @@ class KaminoCsvTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["value_usd"], "10.118")
         self.assertEqual(rows[0]["apy"], "0.032")
         self.assertEqual(rows[0]["farm_rewards_apy"], "0.03")
+
+    def test_derives_kamino_farm_user_state_address(self):
+        self.assertEqual(
+            _derive_kamino_farm_user_state_address(
+                "8hznHD38esVyPps3hUcFahynwekYUfjn43PRz9n5PDZN",
+                "4hgKXUgyETQVxEf1HXoDYHnoJXey37Y9Srkrp6kjwwDp",
+            ),
+            "9F8Jk9ujXkRFjdbr8nEsEHJmhndoX5nehFJWf3K2sf8s",
+        )
+
+    def test_parses_kamino_farm_staked_shares(self):
+        data = bytearray(920)
+        data[:8] = KAMINO_FARM_USER_STATE_DISCRIMINATOR
+        active_stake_scaled = 27415311762906484421683123955
+        data[408:424] = active_stake_scaled.to_bytes(16, "little")
+        account_info = {
+            "owner": KAMINO_FARMS_PROGRAM_ID,
+            "data": [base64.b64encode(data).decode(), "base64"],
+        }
+
+        shares = _parse_kamino_farm_staked_shares(account_info, 6)
+
+        self.assertEqual(shares, Decimal("27415.311762906484421683123955"))
+
+    def test_parses_kamino_vault_state(self):
+        data = bytearray(58728)
+        data[:8] = KAMINO_VAULT_STATE_DISCRIMINATOR
+        token_mint = bytes([1]) * 32
+        shares_mint = bytes([2]) * 32
+        vault_farm = bytes([3]) * 32
+        first_loss_farm = bytes([4]) * 32
+        data[80:112] = token_mint
+        data[112:120] = (6).to_bytes(8, "little")
+        data[184:216] = shares_mint
+        data[216:224] = (6).to_bytes(8, "little")
+        data[224:232] = (123).to_bytes(8, "little")
+        data[232:240] = (456).to_bytes(8, "little")
+        data[58528:58540] = b"Sentora PYUSD"
+        data[58600:58632] = vault_farm
+        data[58696:58728] = first_loss_farm
+        account_info = {
+            "owner": KAMINO_VAULT_PROGRAM_ID,
+            "data": [base64.b64encode(data).decode(), "base64"],
+        }
+
+        state = _parse_kamino_vault_state("vault-address", account_info)
+
+        self.assertIsNotNone(state)
+        self.assertEqual(state["token_mint"], _base58_encode(token_mint))
+        self.assertEqual(state["shares_mint"], _base58_encode(shares_mint))
+        self.assertEqual(state["shares_mint_decimals"], 6)
+        self.assertEqual(state["name"], "Sentora PYUSD")
+        self.assertEqual(state["vault_farm"], _base58_encode(vault_farm))
+        self.assertEqual(
+            state["first_loss_capital_farm"], _base58_encode(first_loss_farm)
+        )
+
+    def test_builds_kamino_positions_from_staked_shares(self):
+        positions = _build_kamino_vault_token_positions(
+            [{"mint": "share-mint", "balance": Decimal("2.5")}],
+            {
+                "vault-address": {
+                    "shares_mint": "share-mint",
+                    "shares_mint_decimals": 6,
+                }
+            },
+            {"vault-address": Decimal("7.5")},
+        )
+
+        self.assertEqual(positions, [
+            {
+                "mint": "share-mint",
+                "balance": Decimal("10.0"),
+                "unstaked_balance": Decimal("2.5"),
+                "staked_balance": Decimal("7.5"),
+                "vault_address": "vault-address",
+            }
+        ])
 
     def test_renders_empty_kamino_csv(self):
         self.assertEqual(

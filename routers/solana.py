@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import csv
+import hashlib
 import io
 import re
 from datetime import UTC, datetime
@@ -21,6 +22,8 @@ KAMINO_RESOURCES_ENDPOINT = "https://cdn.kamino.com/resources.json"
 KAMINO_SOLANA_RPC_ENDPOINT = (
     "https://helius-rpc.kamino.com/02996efe-bbc3-405f-8d87-845794261033"
 )
+KAMINO_VAULT_PROGRAM_ID = "KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd"
+KAMINO_FARMS_PROGRAM_ID = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
 GMTRADE_RPC_ENDPOINT = "https://rpc-1.gmtrade.xyz/"
 GMTRADE_PRICE_TICKERS_ENDPOINT = (
     "https://gmtrade-web-backend.gmtrade.xyz/cache/prices/tickers"
@@ -37,6 +40,19 @@ GMTRADE_MARKET_DECIMALS = 20
 GMTRADE_PRICE_DECIMALS = 30
 SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+DEFAULT_PUBLIC_KEY = "11111111111111111111111111111111"
+SOLANA_PDA_MARKER = b"ProgramDerivedAddress"
+SOLANA_ED25519_P = 2**255 - 19
+SOLANA_ED25519_D = (
+    -121665 * pow(121666, -1, SOLANA_ED25519_P)
+) % SOLANA_ED25519_P
+KAMINO_VAULT_STATE_DISCRIMINATOR = bytes([228, 196, 82, 165, 98, 210, 235, 152])
+KAMINO_FARM_USER_STATE_DISCRIMINATOR = bytes(
+    [72, 177, 85, 249, 76, 167, 186, 126]
+)
+KAMINO_VAULT_STATE_MIN_SIZE = 58728
+KAMINO_FARM_USER_STATE_SIZE = 920
+WAD_DECIMALS = 18
 getcontext().prec = 50
 GMTRADE_CSV_HEADER = [
     "type",
@@ -267,6 +283,55 @@ def _base58_encode(data: bytes) -> str:
 
     leading_zeroes = len(data) - len(data.lstrip(b"\x00"))
     return BASE58_ALPHABET[0] * leading_zeroes + (encoded or "")
+
+
+def _is_ed25519_point_on_curve(data: bytes) -> bool:
+    if len(data) != 32:
+        return False
+
+    sign = data[31] >> 7
+    y = int.from_bytes(data, "little") & ((1 << 255) - 1)
+    if y >= SOLANA_ED25519_P:
+        return False
+
+    y_squared = (y * y) % SOLANA_ED25519_P
+    numerator = (y_squared - 1) % SOLANA_ED25519_P
+    denominator = (SOLANA_ED25519_D * y_squared + 1) % SOLANA_ED25519_P
+    try:
+        x_squared = numerator * pow(denominator, -1, SOLANA_ED25519_P)
+    except ValueError:
+        return False
+    x_squared %= SOLANA_ED25519_P
+
+    if x_squared == 0:
+        return sign == 0
+
+    return pow(x_squared, (SOLANA_ED25519_P - 1) // 2, SOLANA_ED25519_P) == 1
+
+
+def _find_program_address(seeds: list[bytes], program_id: str) -> str:
+    program_id_bytes = _base58_decode(program_id)
+    if len(program_id_bytes) != 32:
+        raise ValueError("invalid Solana program id")
+    for seed in seeds:
+        if len(seed) > 32:
+            raise ValueError("Solana PDA seed exceeds 32 bytes")
+
+    for bump in range(255, -1, -1):
+        digest = hashlib.sha256(
+            b"".join([*seeds, bytes([bump]), program_id_bytes, SOLANA_PDA_MARKER])
+        ).digest()
+        if not _is_ed25519_point_on_curve(digest):
+            return _base58_encode(digest)
+
+    raise ValueError("unable to find a valid Solana program address")
+
+
+def _derive_kamino_farm_user_state_address(farm_address: str, wallet: str) -> str:
+    return _find_program_address(
+        [b"user", _base58_decode(farm_address), _base58_decode(wallet)],
+        KAMINO_FARMS_PROGRAM_ID,
+    )
 
 
 def _is_solana_address(value: str) -> bool:
@@ -952,6 +1017,143 @@ async def _fetch_kamino_vault_metrics(
     return payload if isinstance(payload, dict) else {}
 
 
+async def _fetch_multiple_account_infos(
+    client: httpx.AsyncClient,
+    addresses: list[str],
+    endpoint: str = KAMINO_SOLANA_RPC_ENDPOINT,
+) -> dict[str, dict[str, Any] | None]:
+    if not addresses:
+        return {}
+
+    account_infos: dict[str, dict[str, Any] | None] = {}
+    for index in range(0, len(addresses), 100):
+        chunk = addresses[index : index + 100]
+        result = await _solana_rpc_request(
+            client,
+            "getMultipleAccounts",
+            [chunk, {"encoding": "base64", "commitment": "confirmed"}],
+            endpoint=endpoint,
+        )
+        values = result.get("value") if isinstance(result, dict) else []
+        if not isinstance(values, list):
+            values = []
+        for address, value in zip(chunk, values, strict=False):
+            account_infos[address] = value if isinstance(value, dict) else None
+
+    return account_infos
+
+
+def _rpc_account_info_data(account_info: dict[str, Any] | None) -> bytes:
+    if not isinstance(account_info, dict):
+        return b""
+    return _decode_rpc_account_data(account_info.get("data"))
+
+
+def _decode_null_padded_ascii(data: bytes) -> str:
+    return data.split(b"\x00", 1)[0].decode("utf-8", errors="ignore")
+
+
+def _parse_kamino_vault_state(
+    vault_address: str, account_info: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not isinstance(account_info, dict):
+        return None
+    if account_info.get("owner") != KAMINO_VAULT_PROGRAM_ID:
+        return None
+
+    data = _rpc_account_info_data(account_info)
+    if (
+        len(data) < KAMINO_VAULT_STATE_MIN_SIZE
+        or data[:8] != KAMINO_VAULT_STATE_DISCRIMINATOR
+    ):
+        return None
+
+    return {
+        "vault_address": vault_address,
+        "token_mint": _read_pubkey(data, 80),
+        "token_mint_decimals": _read_u64_le(data, 112),
+        "shares_mint": _read_pubkey(data, 184),
+        "shares_mint_decimals": _read_u64_le(data, 216),
+        "token_available": _read_u64_le(data, 224),
+        "shares_issued": _read_u64_le(data, 232),
+        "name": _decode_null_padded_ascii(data[58528:58568]),
+        "vault_farm": _read_pubkey(data, 58600),
+        "first_loss_capital_farm": _read_pubkey(data, 58696),
+    }
+
+
+async def _fetch_kamino_vault_states(
+    client: httpx.AsyncClient, vault_addresses: list[str]
+) -> dict[str, dict[str, Any]]:
+    account_infos = await _fetch_multiple_account_infos(client, vault_addresses)
+    states: dict[str, dict[str, Any]] = {}
+    for vault_address in vault_addresses:
+        state = _parse_kamino_vault_state(
+            vault_address, account_infos.get(vault_address)
+        )
+        if state is not None:
+            states[vault_address] = state
+    return states
+
+
+def _parse_kamino_farm_staked_shares(
+    account_info: dict[str, Any] | None, share_decimals: int
+) -> Decimal:
+    if not isinstance(account_info, dict):
+        return Decimal(0)
+    if account_info.get("owner") != KAMINO_FARMS_PROGRAM_ID:
+        return Decimal(0)
+
+    data = _rpc_account_info_data(account_info)
+    if (
+        len(data) != KAMINO_FARM_USER_STATE_SIZE
+        or data[:8] != KAMINO_FARM_USER_STATE_DISCRIMINATOR
+    ):
+        return Decimal(0)
+
+    active_stake_scaled = _read_u128_le(data, 408)
+    active_stake_lamports = Decimal(active_stake_scaled) / (
+        Decimal(10) ** WAD_DECIMALS
+    )
+    if active_stake_lamports < 1:
+        return Decimal(0)
+    return active_stake_lamports / (Decimal(10) ** share_decimals)
+
+
+async def _fetch_kamino_staked_share_balances(
+    client: httpx.AsyncClient,
+    wallet: str,
+    vault_states: dict[str, dict[str, Any]],
+) -> dict[str, Decimal]:
+    pda_entries: dict[str, tuple[str, int]] = {}
+    for vault_address, state in vault_states.items():
+        for farm_key in ("vault_farm", "first_loss_capital_farm"):
+            farm_address = state.get(farm_key)
+            if not isinstance(farm_address, str) or farm_address == DEFAULT_PUBLIC_KEY:
+                continue
+            try:
+                user_state_address = _derive_kamino_farm_user_state_address(
+                    farm_address, wallet
+                )
+            except ValueError:
+                continue
+            share_decimals = int(state.get("shares_mint_decimals") or 0)
+            pda_entries[user_state_address] = (vault_address, share_decimals)
+
+    account_infos = await _fetch_multiple_account_infos(client, list(pda_entries))
+    balances: dict[str, Decimal] = {}
+    for user_state_address, (vault_address, share_decimals) in pda_entries.items():
+        staked_shares = _parse_kamino_farm_staked_shares(
+            account_infos.get(user_state_address), share_decimals
+        )
+        if staked_shares > 0:
+            balances[vault_address] = (
+                balances.get(vault_address, Decimal(0)) + staked_shares
+            )
+
+    return balances
+
+
 async def _fetch_token_accounts_by_owner(
     client: httpx.AsyncClient, wallet: str, token_program_id: str
 ) -> list[dict[str, Any]]:
@@ -1042,6 +1244,44 @@ def _parse_token_account_position(item: dict[str, Any]) -> dict[str, Any] | None
     }
 
 
+def _build_kamino_vault_token_positions(
+    token_positions: list[dict[str, Any]],
+    vault_states: dict[str, dict[str, Any]],
+    staked_share_balances: dict[str, Decimal],
+) -> list[dict[str, Any]]:
+    unstaked_balances_by_mint: dict[str, Decimal] = {}
+    for token_position in token_positions:
+        mint = token_position["mint"]
+        unstaked_balances_by_mint[mint] = (
+            unstaked_balances_by_mint.get(mint, Decimal(0))
+            + token_position["balance"]
+        )
+
+    positions = []
+    for vault_address, state in vault_states.items():
+        share_mint = state.get("shares_mint")
+        if not isinstance(share_mint, str) or not share_mint:
+            continue
+
+        unstaked_balance = unstaked_balances_by_mint.get(share_mint, Decimal(0))
+        staked_balance = staked_share_balances.get(vault_address, Decimal(0))
+        total_balance = unstaked_balance + staked_balance
+        if total_balance <= 0:
+            continue
+
+        positions.append(
+            {
+                "mint": share_mint,
+                "balance": total_balance,
+                "unstaked_balance": unstaked_balance,
+                "staked_balance": staked_balance,
+                "vault_address": vault_address,
+            }
+        )
+
+    return positions
+
+
 def _build_kamino_rows(
     wallet: str,
     token_positions: list[dict[str, Any]],
@@ -1051,17 +1291,26 @@ def _build_kamino_rows(
     updated_at: str,
 ) -> list[dict[str, Any]]:
     resource_index = _build_kamino_vault_resource_index(resources)
+    resources_by_vault = _kamino_vault_resources(resources)
     rows = []
 
     for token_position in token_positions:
         mint = token_position["mint"]
-        metadata = metadata_by_mint.get(mint)
-        if not metadata:
+        metadata = metadata_by_mint.get(mint, {})
+        vault_address = token_position.get("vault_address")
+        resource = (
+            resources_by_vault.get(vault_address)
+            if isinstance(vault_address, str)
+            else None
+        )
+        if not isinstance(resource, dict):
+            resource_match = _match_kamino_vault_resource(metadata, resource_index)
+            vault_address = resource_match[0] if resource_match else ""
+            resource = resource_match[1] if resource_match else {}
+
+        if not metadata and not vault_address:
             continue
 
-        resource_match = _match_kamino_vault_resource(metadata, resource_index)
-        vault_address = resource_match[0] if resource_match else ""
-        resource = resource_match[1] if resource_match else {}
         metrics = metrics_by_vault.get(vault_address, {})
         balance = token_position["balance"]
         tokens_per_share = _decimal_or_none(metrics.get("tokensPerShare"))
@@ -1423,6 +1672,17 @@ async def _build_kamino_csv_content(normalized_wallet: str) -> str:
             _fetch_kamino_resources(client),
             _fetch_token_accounts(client, normalized_wallet),
         )
+        resource_vault_addresses = [
+            vault_address
+            for vault_address in _kamino_vault_resources(resources)
+            if isinstance(vault_address, str)
+        ]
+        vault_states = await _fetch_kamino_vault_states(
+            client, resource_vault_addresses
+        )
+        staked_share_balances = await _fetch_kamino_staked_share_balances(
+            client, normalized_wallet, vault_states
+        )
         token_positions = [
             parsed
             for parsed in (
@@ -1430,8 +1690,23 @@ async def _build_kamino_csv_content(normalized_wallet: str) -> str:
             )
             if parsed is not None
         ]
+        kamino_token_positions = _build_kamino_vault_token_positions(
+            token_positions, vault_states, staked_share_balances
+        )
+        known_share_mints = {
+            state["shares_mint"]
+            for state in vault_states.values()
+            if isinstance(state.get("shares_mint"), str)
+        }
+        fallback_token_positions = [
+            token_position
+            for token_position in token_positions
+            if token_position["mint"] not in known_share_mints
+        ]
 
-        unique_mints = _collect_unique_mints(token_positions, "mint")
+        unique_mints = _collect_unique_mints(
+            [*kamino_token_positions, *fallback_token_positions], "mint"
+        )
         metadata_results = await asyncio.gather(
             *(
                 _fetch_kamino_vault_token_metadata(client, mint)
@@ -1445,10 +1720,25 @@ async def _build_kamino_csv_content(normalized_wallet: str) -> str:
         }
         resource_index = _build_kamino_vault_resource_index(resources)
         vault_addresses = []
-        for metadata in metadata_by_mint.values():
+        matched_fallback_positions = []
+        for token_position in fallback_token_positions:
+            metadata = metadata_by_mint.get(token_position["mint"])
+            if not metadata:
+                continue
             resource_match = _match_kamino_vault_resource(metadata, resource_index)
-            if resource_match and resource_match[0] not in vault_addresses:
-                vault_addresses.append(resource_match[0])
+            if not resource_match:
+                continue
+            matched_fallback_positions.append(token_position)
+
+        final_token_positions = [*kamino_token_positions, *matched_fallback_positions]
+        for token_position in final_token_positions:
+            vault_address = token_position.get("vault_address")
+            if not isinstance(vault_address, str) or not vault_address:
+                metadata = metadata_by_mint.get(token_position["mint"], {})
+                resource_match = _match_kamino_vault_resource(metadata, resource_index)
+                vault_address = resource_match[0] if resource_match else ""
+            if vault_address and vault_address not in vault_addresses:
+                vault_addresses.append(vault_address)
 
         metrics_results = await asyncio.gather(
             *(
@@ -1460,7 +1750,7 @@ async def _build_kamino_csv_content(normalized_wallet: str) -> str:
 
     rows = _build_kamino_rows(
         normalized_wallet,
-        token_positions,
+        final_token_positions,
         metadata_by_mint,
         resources,
         metrics_by_vault,
