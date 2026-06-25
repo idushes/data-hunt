@@ -32,6 +32,7 @@ Guidance for coding agents working in this repository.
 - The runtime image exposes `PORT=8111` and starts Gunicorn with `uvicorn.workers.UvicornWorker`.
 - Kubernetes manifests currently live outside this repo at `../k8s/backend/`.
 - The Kubernetes deployment uses namespace `agents`, app name `data-hunt`, service `data-hunt-service`, and host `hunt.data.lisacorp.com`.
+- The public backend API domain is `https://hunt.data.lisacorp.com`.
 - The deployment manifest references image `dushes/data-hunt` with no explicit tag, which means Docker/Kubernetes default to `latest`.
 - Typical deploy flow is: build the image, push `dushes/data-hunt`, then apply `../k8s/backend/deployment.yaml`, `../k8s/backend/service.yaml`, and `../k8s/backend/ingress.yaml`.
 - Health checks are expected at `/health/liveness` and `/health/readiness` on port `8111`.
