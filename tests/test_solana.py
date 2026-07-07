@@ -17,15 +17,19 @@ from routers.solana import (
     SPL_TOKEN_2022_PROGRAM_ID,
     SPL_TOKEN_PROGRAM_ID,
     _base58_encode,
+    _build_kamino_portfolio_rows,
     _build_kamino_rows,
     _build_kamino_vault_token_positions,
     _build_gmtrade_perp_rows,
     _decode_gmtrade_perp_position,
     _derive_kamino_farm_user_state_address,
+    _fetch_kamino_vault_metrics,
     _is_solana_address,
     _kamino_csv_cache,
+    _kamino_portfolio_csv_cache,
     _gmtrade_csv_cache,
     _gmtrade_perp_csv_cache,
+    _filter_kamino_portfolio_rows,
     _fetch_market_infos,
     _fetch_optional_lookup,
     _fetch_optional_positions,
@@ -35,9 +39,11 @@ from routers.solana import (
     _parse_kamino_farm_staked_shares,
     _parse_kamino_vault_state,
     _render_kamino_csv,
+    _render_kamino_portfolio_csv,
     _render_gmtrade_perp_csv,
     _rpc_request,
     get_kamino_csv,
+    get_kamino_positions_csv,
     get_gmtrade_csv,
     get_gmtrade_perps_csv,
 )
@@ -219,9 +225,11 @@ class GmtradeCsvCacheTest(unittest.IsolatedAsyncioTestCase):
 class KaminoCsvTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         _kamino_csv_cache.clear()
+        _kamino_portfolio_csv_cache.clear()
 
     def tearDown(self):
         _kamino_csv_cache.clear()
+        _kamino_portfolio_csv_cache.clear()
 
     def test_normalizes_kvault_metadata_name_to_resource_name(self):
         self.assertEqual(
@@ -278,6 +286,83 @@ class KaminoCsvTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["value_usd"], "10.118")
         self.assertEqual(rows[0]["apy"], "0.032")
         self.assertEqual(rows[0]["farm_rewards_apy"], "0.03")
+
+    async def test_fetches_kvault_metrics_from_official_vault_path(self):
+        seen_paths = []
+
+        def handler(request):
+            seen_paths.append(request.url.path)
+            return httpx.Response(200, json={"apy": "0.03"})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as client:
+            result = await _fetch_kamino_vault_metrics(client, "vault-address")
+
+        self.assertEqual(result, {"apy": "0.03"})
+        self.assertEqual(seen_paths, ["/kvaults/vaults/vault-address/metrics"])
+
+    def test_builds_portfolio_rows_with_supply_apy_daily_interest_and_rewards(self):
+        rows = _build_kamino_portfolio_rows(
+            "11111111111111111111111111111111",
+            {
+                "timestamp": "2026-07-07T00:00:00Z",
+                "sections": {
+                    "earn": {
+                        "positionsRefreshedOn": "2026-07-01T00:00:00Z",
+                        "pricesRefreshedOn": "2026-07-07T00:00:00Z",
+                    }
+                },
+                "earn": [
+                    {
+                        "vault": "vault-address",
+                        "tokenMint": "token-mint",
+                        "symbol": "PYUSD",
+                        "name": "Sentora PYUSD",
+                        "netValue": "3650",
+                        "shares": "3600",
+                        "amount": "3651.25",
+                    }
+                ],
+            },
+            {
+                "vault-address": {
+                    "apy": "0.02",
+                    "apyFarmRewards": "0.01",
+                    "apy7d": "0.03",
+                    "tokenPrice": "1",
+                    "sharePrice": "1.013",
+                    "tokensPerShare": "1.014",
+                }
+            },
+            {
+                "vault-address": [
+                    {"mint": "token-mint", "amount": "8.648049"},
+                ]
+            },
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["vault_name"], "Sentora PYUSD")
+        self.assertEqual(rows[0]["amount"], "3651.25")
+        self.assertEqual(rows[0]["net_value_usd"], "3650")
+        self.assertEqual(rows[0]["base_apy"], "0.02")
+        self.assertEqual(rows[0]["farm_rewards_apy"], "0.01")
+        self.assertEqual(rows[0]["supply_apy"], "0.03")
+        self.assertEqual(rows[0]["estimated_daily_interest_usd"], "0.3")
+        self.assertEqual(rows[0]["claimable_reward_amount"], "8.648049")
+        self.assertEqual(rows[0]["claimable_reward_symbol"], "PYUSD")
+
+    def test_filters_portfolio_rows_by_vault_name_contains(self):
+        rows = [
+            {"vault_address": "vault-a", "vault_name": "Sentora PYUSD"},
+            {"vault_address": "vault-b", "vault_name": "Steakhouse USDC"},
+        ]
+
+        self.assertEqual(
+            _filter_kamino_portfolio_rows(rows, None, "sentora"),
+            [rows[0]],
+        )
 
     def test_derives_kamino_farm_user_state_address(self):
         self.assertEqual(
@@ -369,6 +454,20 @@ class KaminoCsvTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    def test_renders_empty_kamino_portfolio_csv(self):
+        self.assertEqual(
+            _render_kamino_portfolio_csv([]),
+            (
+                "product,wallet,vault_address,vault_name,symbol,amount,"
+                "net_value_usd,shares,base_apy,farm_rewards_apy,supply_apy,"
+                "apy_7d,apy_30d,apy_90d,estimated_daily_interest_usd,"
+                "claimable_reward_amount,claimable_reward_symbol,"
+                "claimable_rewards,token_price_usd,share_price,tokens_per_share,"
+                "positions_refreshed_on,prices_refreshed_on,updated_at,"
+                "source_url\r\n"
+            ),
+        )
+
     async def test_kamino_endpoint_updates_cache_after_successful_refresh(self):
         content = "type,vault_name\nkVault,Sentora PYUSD\n"
         wallet = "11111111111111111111111111111111"
@@ -393,6 +492,20 @@ class KaminoCsvTest(unittest.IsolatedAsyncioTestCase):
         ) as build:
             build.side_effect = HTTPException(status_code=502)
             response = await get_kamino_csv(wallet)
+
+        self.assertEqual(response.body.decode(), cached)
+
+    async def test_kamino_positions_csv_returns_cached_csv_when_refresh_fails(self):
+        wallet = "11111111111111111111111111111111"
+        cached = "product,vault_name\nearn,cached\n"
+        _kamino_portfolio_csv_cache[f"{wallet}||sentora"] = cached
+
+        with patch(
+            "routers.solana._build_kamino_portfolio_csv_content",
+            new_callable=AsyncMock,
+        ) as build:
+            build.side_effect = HTTPException(status_code=502)
+            response = await get_kamino_positions_csv(wallet, name="Sentora")
 
         self.assertEqual(response.body.decode(), cached)
 

@@ -117,11 +117,39 @@ KAMINO_CSV_HEADER = [
     "updated_at",
     "source_url",
 ]
+KAMINO_PORTFOLIO_CSV_HEADER = [
+    "product",
+    "wallet",
+    "vault_address",
+    "vault_name",
+    "symbol",
+    "amount",
+    "net_value_usd",
+    "shares",
+    "base_apy",
+    "farm_rewards_apy",
+    "supply_apy",
+    "apy_7d",
+    "apy_30d",
+    "apy_90d",
+    "estimated_daily_interest_usd",
+    "claimable_reward_amount",
+    "claimable_reward_symbol",
+    "claimable_rewards",
+    "token_price_usd",
+    "share_price",
+    "tokens_per_share",
+    "positions_refreshed_on",
+    "prices_refreshed_on",
+    "updated_at",
+    "source_url",
+]
 
 router = APIRouter(prefix="/solana", tags=["solana"])
 _gmtrade_csv_cache: dict[str, str] = {}
 _gmtrade_perp_csv_cache: dict[str, str] = {}
 _kamino_csv_cache: dict[str, str] = {}
+_kamino_portfolio_csv_cache: dict[str, str] = {}
 
 
 async def _query_graphql(client: httpx.AsyncClient, query: str) -> dict[str, Any]:
@@ -1010,8 +1038,31 @@ async def _fetch_kamino_vault_metrics(
 ) -> dict[str, Any]:
     payload = await _fetch_json(
         client,
-        f"{KAMINO_API_ENDPOINT}/kvaults/{vault_address}/metrics",
+        f"{KAMINO_API_ENDPOINT}/kvaults/vaults/{vault_address}/metrics",
         "Kamino kVault metrics request",
+        allow_404=True,
+    )
+    return payload if isinstance(payload, dict) else {}
+
+
+async def _fetch_kamino_portfolio(
+    client: httpx.AsyncClient, wallet: str
+) -> dict[str, Any]:
+    payload = await _fetch_json(
+        client,
+        f"{KAMINO_API_ENDPOINT}/portfolio/{wallet}",
+        "Kamino portfolio request",
+    )
+    return payload if isinstance(payload, dict) else {}
+
+
+async def _fetch_kamino_rewards(
+    client: httpx.AsyncClient, wallet: str
+) -> dict[str, Any]:
+    payload = await _fetch_json(
+        client,
+        f"{KAMINO_API_ENDPOINT}/portfolio/{wallet}/rewards?rewardTypes=0,1,2,3",
+        "Kamino rewards request",
         allow_404=True,
     )
     return payload if isinstance(payload, dict) else {}
@@ -1326,7 +1377,7 @@ def _build_kamino_rows(
             else None
         )
         source_url = (
-            f"{KAMINO_API_ENDPOINT}/kvaults/{vault_address}/metrics"
+            f"{KAMINO_API_ENDPOINT}/kvaults/vaults/{vault_address}/metrics"
             if vault_address
             else f"{KAMINO_API_ENDPOINT}/kvaults/mints/{mint}/metadata"
         )
@@ -1376,6 +1427,169 @@ def _build_kamino_rows(
 
     rows.sort(key=lambda row: _decimal_or_zero(row["value_usd"]), reverse=True)
     return rows
+
+
+def _kamino_portfolio_positions(portfolio: dict[str, Any]) -> list[dict[str, Any]]:
+    positions = []
+    for product in ("earn", "privateCredit"):
+        items = portfolio.get(product)
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if isinstance(item, dict):
+                positions.append({"product": product, **item})
+
+    return positions
+
+
+def _kamino_rewards_by_vault(
+    rewards_payload: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    farms = rewards_payload.get("farms")
+    if not isinstance(farms, list):
+        return {}
+
+    rewards_by_vault: dict[str, list[dict[str, Any]]] = {}
+    for farm in farms:
+        if not isinstance(farm, dict):
+            continue
+        vault = farm.get("vault")
+        if not isinstance(vault, str) or not vault:
+            continue
+
+        rewards = farm.get("rewards")
+        if not isinstance(rewards, list):
+            continue
+
+        for reward in rewards:
+            if isinstance(reward, dict):
+                rewards_by_vault.setdefault(vault, []).append(reward)
+
+    return rewards_by_vault
+
+
+def _format_kamino_claimable_rewards(
+    rewards: list[dict[str, Any]],
+    token_mint: str,
+    symbol: str,
+) -> tuple[str, str, str]:
+    parts = []
+    first_amount = ""
+    first_symbol = ""
+
+    for reward in rewards:
+        amount = _format_decimal(_decimal_or_none(reward.get("amount")), 12)
+        if not amount:
+            continue
+
+        mint = reward.get("mint") if isinstance(reward.get("mint"), str) else ""
+        reward_symbol = symbol if mint == token_mint and symbol else mint
+        if not reward_symbol:
+            reward_symbol = "unknown"
+
+        if not first_amount:
+            first_amount = amount
+            first_symbol = reward_symbol
+        parts.append(f"{amount} {reward_symbol}")
+
+    return first_amount, first_symbol, "; ".join(parts)
+
+
+def _build_kamino_portfolio_rows(
+    wallet: str,
+    portfolio: dict[str, Any],
+    metrics_by_vault: dict[str, dict[str, Any]],
+    rewards_by_vault: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    sections = portfolio.get("sections")
+    sections = sections if isinstance(sections, dict) else {}
+    updated_at = str(portfolio.get("timestamp") or _now_iso())
+    rows = []
+
+    for position in _kamino_portfolio_positions(portfolio):
+        vault_address = position.get("vault")
+        if not isinstance(vault_address, str) or not vault_address:
+            continue
+
+        product = str(position.get("product") or "")
+        section = sections.get(product)
+        section = section if isinstance(section, dict) else {}
+        metrics = metrics_by_vault.get(vault_address, {})
+        symbol = str(position.get("symbol") or "")
+        token_mint = str(position.get("tokenMint") or "")
+
+        net_value = _decimal_or_zero(position.get("netValue"))
+        base_apy = _decimal_or_zero(metrics.get("apy"))
+        farm_rewards_apy = _decimal_or_zero(metrics.get("apyFarmRewards"))
+        supply_apy = base_apy + farm_rewards_apy
+        estimated_daily_interest = net_value * supply_apy / Decimal(365)
+        reward_amount, reward_symbol, rewards = _format_kamino_claimable_rewards(
+            rewards_by_vault.get(vault_address, []),
+            token_mint,
+            symbol,
+        )
+
+        rows.append(
+            {
+                "product": product,
+                "wallet": wallet,
+                "vault_address": vault_address,
+                "vault_name": position.get("name") or "",
+                "symbol": symbol,
+                "amount": _format_decimal(_decimal_or_none(position.get("amount")), 12),
+                "net_value_usd": _format_decimal(net_value, 6),
+                "shares": _format_decimal(_decimal_or_none(position.get("shares")), 12),
+                "base_apy": _format_decimal(base_apy, 12),
+                "farm_rewards_apy": _format_decimal(farm_rewards_apy, 12),
+                "supply_apy": _format_decimal(supply_apy, 12),
+                "apy_7d": _format_decimal(_decimal_or_none(metrics.get("apy7d")), 12),
+                "apy_30d": _format_decimal(_decimal_or_none(metrics.get("apy30d")), 12),
+                "apy_90d": _format_decimal(_decimal_or_none(metrics.get("apy90d")), 12),
+                "estimated_daily_interest_usd": _format_decimal(
+                    estimated_daily_interest, 6
+                ),
+                "claimable_reward_amount": reward_amount,
+                "claimable_reward_symbol": reward_symbol,
+                "claimable_rewards": rewards,
+                "token_price_usd": _format_decimal(
+                    _decimal_or_none(metrics.get("tokenPrice")), 12
+                ),
+                "share_price": _format_decimal(
+                    _decimal_or_none(metrics.get("sharePrice")), 12
+                ),
+                "tokens_per_share": _format_decimal(
+                    _decimal_or_none(metrics.get("tokensPerShare")), 12
+                ),
+                "positions_refreshed_on": section.get("positionsRefreshedOn") or "",
+                "prices_refreshed_on": section.get("pricesRefreshedOn") or "",
+                "updated_at": updated_at,
+                "source_url": (
+                    f"{KAMINO_API_ENDPOINT}/kvaults/vaults/{vault_address}/metrics"
+                ),
+            }
+        )
+
+    rows.sort(key=lambda row: _decimal_or_zero(row["net_value_usd"]), reverse=True)
+    return rows
+
+
+def _filter_kamino_portfolio_rows(
+    rows: list[dict[str, Any]], vault: str | None, name: str | None
+) -> list[dict[str, Any]]:
+    normalized_vault = vault.strip() if isinstance(vault, str) else ""
+    normalized_name = name.strip().lower() if isinstance(name, str) else ""
+
+    filtered = []
+    for row in rows:
+        if normalized_vault and row.get("vault_address") != normalized_vault:
+            continue
+        row_name = str(row.get("vault_name", "")).lower()
+        if normalized_name and normalized_name not in row_name:
+            continue
+        filtered.append(row)
+
+    return filtered
 
 
 async def _fetch_optional_lookup(fetcher: Any, *args: Any) -> dict[str, Any]:
@@ -1561,6 +1775,24 @@ def _set_cached_kamino_csv(wallet: str, content: str) -> None:
     _kamino_csv_cache[wallet] = content
 
 
+def _get_cached_kamino_portfolio_csv(cache_key: str) -> str | None:
+    cached = _kamino_portfolio_csv_cache.get(cache_key)
+    if cached is not None:
+        _kamino_portfolio_csv_cache[cache_key] = _kamino_portfolio_csv_cache.pop(
+            cache_key
+        )
+    return cached
+
+
+def _set_cached_kamino_portfolio_csv(cache_key: str, content: str) -> None:
+    if cache_key in _kamino_portfolio_csv_cache:
+        _kamino_portfolio_csv_cache.pop(cache_key)
+    elif len(_kamino_portfolio_csv_cache) >= KAMINO_CSV_CACHE_MAX_SIZE:
+        _kamino_portfolio_csv_cache.pop(next(iter(_kamino_portfolio_csv_cache)))
+
+    _kamino_portfolio_csv_cache[cache_key] = content
+
+
 def _render_gmtrade_csv(rows: list[dict[str, Any]]) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
@@ -1603,6 +1835,17 @@ def _render_kamino_csv(rows: list[dict[str, Any]]) -> str:
 
     for row in rows:
         writer.writerow([row.get(header, "") for header in KAMINO_CSV_HEADER])
+
+    return output.getvalue()
+
+
+def _render_kamino_portfolio_csv(rows: list[dict[str, Any]]) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(KAMINO_PORTFOLIO_CSV_HEADER)
+
+    for row in rows:
+        writer.writerow([row.get(header, "") for header in KAMINO_PORTFOLIO_CSV_HEADER])
 
     return output.getvalue()
 
@@ -1759,6 +2002,54 @@ async def _build_kamino_csv_content(normalized_wallet: str) -> str:
     return _render_kamino_csv(rows)
 
 
+async def _build_kamino_portfolio_data(normalized_wallet: str) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        portfolio, rewards_payload = await asyncio.gather(
+            _fetch_kamino_portfolio(client, normalized_wallet),
+            _fetch_kamino_rewards(client, normalized_wallet),
+        )
+        vault_addresses = [
+            position["vault"]
+            for position in _kamino_portfolio_positions(portfolio)
+            if isinstance(position.get("vault"), str)
+        ]
+        unique_vault_addresses = list(dict.fromkeys(vault_addresses))
+        metrics_results = await asyncio.gather(
+            *(
+                _fetch_kamino_vault_metrics(client, vault_address)
+                for vault_address in unique_vault_addresses
+            )
+        )
+        metrics_by_vault = dict(
+            zip(unique_vault_addresses, metrics_results, strict=False)
+        )
+
+    rows = _build_kamino_portfolio_rows(
+        normalized_wallet,
+        portfolio,
+        metrics_by_vault,
+        _kamino_rewards_by_vault(rewards_payload),
+    )
+    return {
+        "wallet": normalized_wallet,
+        "timestamp": portfolio.get("timestamp") or _now_iso(),
+        "sections": (
+            portfolio.get("sections")
+            if isinstance(portfolio.get("sections"), dict)
+            else {}
+        ),
+        "positions": rows,
+    }
+
+
+async def _build_kamino_portfolio_csv_content(
+    normalized_wallet: str, vault: str | None, name: str | None
+) -> str:
+    data = await _build_kamino_portfolio_data(normalized_wallet)
+    rows = _filter_kamino_portfolio_rows(data["positions"], vault, name)
+    return _render_kamino_portfolio_csv(rows)
+
+
 @router.get(
     "/gmtrade.csv",
     summary="Export Solana GMTrade assets for Google Sheets",
@@ -1819,6 +2110,78 @@ async def get_kamino_csv(
             content = _render_kamino_csv([])
     else:
         _set_cached_kamino_csv(normalized_wallet, content)
+
+    return Response(content=content, media_type="text/csv")
+
+
+@router.get(
+    "/kamino-positions",
+    summary="Get normalized Kamino positions for a Solana wallet",
+    description=(
+        "Returns normalized Kamino Earn and Private Credit positions from the "
+        "Kamino Portfolio API, enriched with current vault APY metrics and "
+        "claimable vault rewards."
+    ),
+)
+async def get_kamino_positions(
+    wallet: str = Query(..., description="Solana wallet address"),
+    vault: str | None = Query(None, description="Optional exact vault address filter"),
+    name: str | None = Query(None, description="Optional vault name contains filter"),
+):
+    normalized_wallet = wallet.strip()
+    if not normalized_wallet:
+        raise HTTPException(status_code=400, detail="wallet is required")
+    if not _is_solana_address(normalized_wallet):
+        raise HTTPException(status_code=400, detail="invalid Solana wallet address")
+
+    data = await _build_kamino_portfolio_data(normalized_wallet)
+    data["positions"] = _filter_kamino_portfolio_rows(
+        data["positions"], vault, name
+    )
+    return data
+
+
+@router.get(
+    "/kamino-positions.csv",
+    summary="Export normalized Kamino positions for Excel and Google Sheets",
+    description=(
+        "Returns a CSV table with Kamino Earn and Private Credit positions for a "
+        "Solana wallet address. Suitable for Excel Power Query and Google Sheets "
+        "IMPORTDATA."
+    ),
+    responses={200: {"content": {"text/csv": {}}}},
+)
+async def get_kamino_positions_csv(
+    wallet: str = Query(..., description="Solana wallet address"),
+    vault: str | None = Query(None, description="Optional exact vault address filter"),
+    name: str | None = Query(None, description="Optional vault name contains filter"),
+):
+    normalized_wallet = wallet.strip()
+    if not normalized_wallet:
+        raise HTTPException(status_code=400, detail="wallet is required")
+    if not _is_solana_address(normalized_wallet):
+        raise HTTPException(status_code=400, detail="invalid Solana wallet address")
+
+    cache_key = "|".join(
+        [
+            normalized_wallet,
+            vault.strip() if isinstance(vault, str) else "",
+            name.strip().lower() if isinstance(name, str) else "",
+        ]
+    )
+    try:
+        content = await _build_kamino_portfolio_csv_content(
+            normalized_wallet, vault, name
+        )
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+
+        content = _get_cached_kamino_portfolio_csv(cache_key)
+        if content is None:
+            content = _render_kamino_portfolio_csv([])
+    else:
+        _set_cached_kamino_portfolio_csv(cache_key, content)
 
     return Response(content=content, media_type="text/csv")
 
