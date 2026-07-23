@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-hunt
+  namespace: data-hunt
+  labels:
+    app.kubernetes.io/name: data-hunt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-hunt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-hunt
+    spec:
+      containers:
+        - name: data-hunt
+          image: dushes/data-hunt@sha256:dcd3d177c5b09e0207393bfeac54b3bbe198a7c5b5e53a6bede75d3813855b8a
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8111
+          envFrom:
+            - secretRef:
+                name: data-hunt-runtime
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: data-hunt-db
+                  key: DATABASE_URL
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-hunt
+  namespace: data-hunt
+  labels:
+    app.kubernetes.io/name: data-hunt
+spec:
+  selector:
+    app.kubernetes.io/name: data-hunt
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: data-hunt
+  namespace: data-hunt
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hunt.data.lisacorp.com
+      secretName: data-hunt-app-tls
+  rules:
+    - host: hunt.data.lisacorp.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
