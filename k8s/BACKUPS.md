@@ -22,12 +22,10 @@ s3:https://S3_ENDPOINT_HOSTNAME/BUCKET_NAME/data-hunt-postgres
 
 ## Cluster configuration
 
-Create the non-secret configuration:
+Apply the non-secret configuration:
 
 ```sh
-kubectl --context data-hunt -n data-hunt create configmap data-hunt-backup-config \
-  --from-literal=RESTIC_REPOSITORY='s3:https://S3_ENDPOINT_HOSTNAME/BUCKET_NAME/data-hunt-postgres' \
-  --from-literal=AWS_DEFAULT_REGION='LINODE_REGION'
+kubectl --context data-hunt apply -f k8s/backup-config.yaml
 ```
 
 Create the credentials without committing them to Git:

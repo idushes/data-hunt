@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-hunt-backup-config
+  namespace: data-hunt
+  labels:
+    app.kubernetes.io/name: data-hunt-postgres-backup
+    app.kubernetes.io/part-of: data-hunt
+data:
+  RESTIC_REPOSITORY: s3:https://sg-sin-1.linodeobjects.com/data-hunt-backups/data-hunt-postgres
+  AWS_DEFAULT_REGION: us-east-1
