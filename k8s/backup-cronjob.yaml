@@ -38,19 +38,19 @@ spec:
               args:
                 - |
                   set -Eeuo pipefail
-                  backup_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  backup_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+                  backup_name="data-hunt-${backup_timestamp}.dump"
                   pg_dump \
                     --dbname="${DATABASE_URL}" \
                     --format=custom \
                     --compress=9 \
                     --no-owner \
                     --no-acl \
-                    --file=/backup/data-hunt.dump
-                  pg_restore --list /backup/data-hunt.dump >/dev/null
+                    --file="/backup/${backup_name}"
+                  pg_restore --list "/backup/${backup_name}" >/dev/null
                   cd /backup
-                  sha256sum data-hunt.dump >data-hunt.dump.sha256
-                  printf 'created_at=%s\nformat=postgresql-custom\n' \
-                    "${backup_timestamp}" >manifest.txt
+                  sha256sum "${backup_name}" >"${backup_name}.sha256"
+                  printf '%s\n' "${backup_name}" >backup-name
               env:
                 - name: DATABASE_URL
                   valueFrom:
@@ -75,8 +75,8 @@ spec:
                 - name: backup
                   mountPath: /backup
           containers:
-            - name: restic-upload
-              image: restic/restic:0.19.1
+            - name: s3-upload
+              image: amazon/aws-cli@sha256:5b76c069e37cfa091ec6398dc683c09e0c9ef8ae2e557b0a36d931df34011227
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh
@@ -84,31 +84,44 @@ spec:
               args:
                 - |
                   set -eu
-                  if ! restic snapshots >/dev/null 2>&1; then
-                    restic init
-                  fi
-                  restic backup /backup \
-                    --host data-hunt \
-                    --tag postgresql \
-                    --tag daily
-                  restic forget \
-                    --host data-hunt \
-                    --tag postgresql \
-                    --keep-daily 30 \
-                    --keep-weekly 8 \
-                    --keep-monthly 12 \
-                    --prune
-                  restic check
+                  backup_name="$(cat /backup/backup-name)"
+                  object_key="${S3_PREFIX}/${backup_name}"
+                  checksum_key="${object_key}.sha256"
+
+                  aws --endpoint-url "${S3_ENDPOINT}" s3 cp \
+                    "/backup/${backup_name}" \
+                    "s3://${S3_BUCKET}/${object_key}" \
+                    --only-show-errors
+                  aws --endpoint-url "${S3_ENDPOINT}" s3 cp \
+                    "/backup/${backup_name}.sha256" \
+                    "s3://${S3_BUCKET}/${checksum_key}" \
+                    --only-show-errors
+
+                  local_size="$(wc -c <"/backup/${backup_name}" | tr -d ' ')"
+                  remote_size="$(aws --endpoint-url "${S3_ENDPOINT}" s3api head-object \
+                    --bucket "${S3_BUCKET}" \
+                    --key "${object_key}" \
+                    --query ContentLength \
+                    --output text)"
+                  test "${local_size}" = "${remote_size}"
+                  printf 'uploaded s3://%s/%s (%s bytes)\n' \
+                    "${S3_BUCKET}" "${object_key}" "${remote_size}"
               envFrom:
                 - configMapRef:
                     name: data-hunt-backup-config
                 - secretRef:
                     name: data-hunt-backup-credentials
               env:
-                - name: RESTIC_CACHE_DIR
+                - name: HOME
                   value: /cache
                 - name: TMPDIR
                   value: /cache
+                - name: AWS_PAGER
+                  value: ""
+                - name: AWS_REQUEST_CHECKSUM_CALCULATION
+                  value: when_required
+                - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+                  value: when_required
               resources:
                 requests:
                   cpu: 100m

@@ -7,5 +7,7 @@ metadata:
     app.kubernetes.io/name: data-hunt-postgres-backup
     app.kubernetes.io/part-of: data-hunt
 data:
-  RESTIC_REPOSITORY: s3:https://sg-sin-1.linodeobjects.com/data-hunt-backups/data-hunt-postgres
+  S3_ENDPOINT: https://sg-sin-1.linodeobjects.com
+  S3_BUCKET: data-hunt-backups
+  S3_PREFIX: data-hunt-postgres/daily
   AWS_DEFAULT_REGION: us-east-1
