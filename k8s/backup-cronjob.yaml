@@ -1,0 +1,138 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: data-hunt-postgres-backup
+  namespace: data-hunt
+  labels:
+    app.kubernetes.io/name: data-hunt-postgres-backup
+    app.kubernetes.io/part-of: data-hunt
+spec:
+  schedule: "30 3 * * *"
+  timeZone: Asia/Makassar
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: data-hunt-postgres-backup
+            app.kubernetes.io/part-of: data-hunt
+        spec:
+          restartPolicy: Never
+          securityContext:
+            fsGroup: 999
+            fsGroupChangePolicy: OnRootMismatch
+          initContainers:
+            - name: postgres-dump
+              image: postgres@sha256:c189d272e4fcdd1ac419adee675d30be3d389c22ee770d593f15819d22a68a0d
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -ec
+              args:
+                - |
+                  set -Eeuo pipefail
+                  backup_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  pg_dump \
+                    --dbname="${DATABASE_URL}" \
+                    --format=custom \
+                    --compress=9 \
+                    --no-owner \
+                    --no-acl \
+                    --file=/backup/data-hunt.dump
+                  pg_restore --list /backup/data-hunt.dump >/dev/null
+                  cd /backup
+                  sha256sum data-hunt.dump >data-hunt.dump.sha256
+                  printf 'created_at=%s\nformat=postgresql-custom\n' \
+                    "${backup_timestamp}" >manifest.txt
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: data-hunt-db
+                      key: DATABASE_URL
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                runAsNonRoot: true
+                runAsUser: 999
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          containers:
+            - name: restic-upload
+              image: restic/restic:0.19.1
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -ec
+              args:
+                - |
+                  set -eu
+                  if ! restic snapshots >/dev/null 2>&1; then
+                    restic init
+                  fi
+                  restic backup /backup \
+                    --host data-hunt \
+                    --tag postgresql \
+                    --tag daily
+                  restic forget \
+                    --host data-hunt \
+                    --tag postgresql \
+                    --keep-daily 30 \
+                    --keep-weekly 8 \
+                    --keep-monthly 12 \
+                    --prune
+                  restic check
+              envFrom:
+                - configMapRef:
+                    name: data-hunt-backup-config
+                - secretRef:
+                    name: data-hunt-backup-credentials
+              env:
+                - name: RESTIC_CACHE_DIR
+                  value: /cache
+                - name: TMPDIR
+                  value: /cache
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                runAsNonRoot: true
+                runAsUser: 999
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                  readOnly: true
+                - name: cache
+                  mountPath: /cache
+          volumes:
+            - name: backup
+              emptyDir:
+                sizeLimit: 1Gi
+            - name: cache
+              emptyDir:
+                sizeLimit: 1Gi
