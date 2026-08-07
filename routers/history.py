@@ -4,11 +4,18 @@ from sqlalchemy.dialects.postgresql import insert
 import sqlalchemy as sa
 import asyncio
 import httpx
+import json
 import logging
 from database import get_db
-from models import Account, AddressHistory, ProjectDict, TokenDict, CEXDict, TokenPriceHistory
-from config import DEBANK_ACCESS_KEY
+from models import Account, AddressHistory, ProjectDict, TokenDict, CEXDict, TokenPriceHistory, DebankRequest
+from config import (
+    DEBANK_ACCESS_KEY,
+    DEBANK_HISTORY_SYNC_MAX_PAGES,
+    DEBANK_MIN_UNITS_BALANCE,
+    DEBANK_PRICE_SYNC_MAX_CALLS,
+)
 from dependencies import get_current_account
+from utils import fetch_debank_units_balance
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -94,6 +101,8 @@ async def sync_history_for_account(
             start_time = None
             has_error = False
             last_error = None
+            pages_fetched = 0
+            has_more = False
             
             # Keep fetching pages until we catch up or run out
             while True:
@@ -103,15 +112,39 @@ async def sync_history_for_account(
                     # If passed, returns history BEFORE this time.
                     params["start_time"] = int(start_time)
 
+                db_request = DebankRequest(
+                    account_id=account.id,
+                    path="/v1/user/all_history_list",
+                    params=json.dumps(params),
+                    status="pending",
+                    created_at=int(datetime.now().timestamp()),
+                    response_json=None,
+                )
+                # Keep request metadata compact; full history pages are stored in
+                # AddressHistory and do not need to be duplicated in this log.
+                db.add(db_request)
+                db.commit()
+
                 try:
                     response = await client.get(base_url, params=params, headers=headers)
+                    pages_fetched += 1
                     if response.status_code != 200:
+                        db_request.status = "error"
+                        db_request.response_json = json.dumps(
+                            {"http_status": response.status_code}
+                        )
+                        db.commit()
                         has_error = True
-                        last_error = f"API Error {response.status_code}: {response.text}"
+                        last_error = f"API Error {response.status_code}"
                         break
                     
                     data = response.json()
                     history_list = data.get("history_list", [])
+                    db_request.status = "success"
+                    db_request.response_json = json.dumps(
+                        {"history_count": len(history_list)}
+                    )
+                    db.commit()
                     
                     # 1. Update Dictionaries (Upsert)
                     # We do this for every page to ensure we have latest metadata
@@ -259,7 +292,18 @@ async def sync_history_for_account(
                     else:
                         break
 
+                    if pages_fetched >= DEBANK_HISTORY_SYNC_MAX_PAGES:
+                        has_more = True
+                        logger.warning(
+                            "History sync page limit reached for %s; remaining pages are deferred",
+                            address,
+                        )
+                        break
+
                 except Exception as e:
+                    db_request.status = "error"
+                    db_request.response_json = json.dumps({"error": str(e)[:500]})
+                    db.commit()
                     has_error = True
                     last_error = str(e)
                     logger.error(f"Error syncing history for {address}: {e}")
@@ -269,6 +313,8 @@ async def sync_history_for_account(
                 "address": address,
                 "status": "success" if not has_error else "partial_error",
                 "synced_count": synced_count,
+                "pages_fetched": pages_fetched,
+                "has_more": has_more,
                 "error": last_error
             })
     
@@ -674,24 +720,63 @@ async def enrich_history_prices_for_account(account: Account, db: Session):
     errors = []
     resolved = set(already_cached)
     
+    units_balance = None
+    deferred_prices = 0
+
     if to_fetch:
         async with httpx.AsyncClient(timeout=30.0) as client:
             headers = {"AccessKey": DEBANK_ACCESS_KEY}
             base_url = "https://pro-openapi.debank.com/v1/token/history_price"
 
-            for token_id, chain, date_str in to_fetch:
+            try:
+                units_balance = await fetch_debank_units_balance(client)
+            except Exception as e:
+                errors.append(f"Unable to verify DeBank units balance: {str(e)}")
+                logger.error("Price enrichment stopped: unable to verify DeBank units balance")
+            else:
+                if units_balance < DEBANK_MIN_UNITS_BALANCE:
+                    errors.append(
+                        "DeBank units balance is below the configured safety threshold"
+                    )
+                    logger.warning(
+                        "Price enrichment stopped: DeBank units balance %d is below threshold %d",
+                        units_balance,
+                        DEBANK_MIN_UNITS_BALANCE,
+                    )
+
+            price_batch = []
+            if not errors:
+                price_batch = sorted(to_fetch)[:DEBANK_PRICE_SYNC_MAX_CALLS]
+            deferred_prices = len(to_fetch) - len(price_batch)
+
+            for token_id, chain, date_str in price_batch:
+                params = {
+                    "id": token_id,
+                    "chain_id": chain,
+                    "date_at": date_str,
+                }
+                db_request = DebankRequest(
+                    account_id=account.id,
+                    path="/v1/token/history_price",
+                    params=json.dumps(params),
+                    status="pending",
+                    created_at=int(datetime.now().timestamp()),
+                    response_json=None,
+                )
+                db.add(db_request)
+                db.commit()
+
                 try:
-                    params = {
-                        "id": token_id,
-                        "chain_id": chain,
-                        "date_at": date_str
-                    }
                     response = await client.get(base_url, params=params, headers=headers)
                     api_calls += 1
 
                     if response.status_code == 200:
                         resp_data = response.json()
                         price = resp_data.get("price")
+                        db_request.status = "success"
+                        db_request.response_json = json.dumps(
+                            {"has_price": price is not None}
+                        )
                         if price is not None:
                             stmt = insert(TokenPriceHistory).values(
                                 token_id=token_id,
@@ -707,17 +792,23 @@ async def enrich_history_prices_for_account(account: Account, db: Session):
                         # token/date and should not be retried forever.
                         resolved.add((token_id, chain, date_str))
                     else:
+                        db_request.status = "error"
+                        db_request.response_json = json.dumps(
+                            {"http_status": response.status_code}
+                        )
                         errors.append(f"{token_id}@{chain}/{date_str}: HTTP {response.status_code}")
                         logger.warning(f"Failed to fetch price for {token_id} on {chain} at {date_str}: {response.status_code}")
 
                 except Exception as e:
+                    db_request.status = "error"
+                    db_request.response_json = json.dumps({"error": str(e)[:500]})
                     errors.append(f"{token_id}@{chain}/{date_str}: {str(e)}")
                     logger.error(f"Error fetching price for {token_id} on {chain} at {date_str}: {e}")
 
                 # Rate limiting: small delay between requests
                 await asyncio.sleep(0.1)
 
-            db.commit()  # Commit all price inserts
+            db.commit()  # Commit all price inserts and request logs
 
     # 6. Mark only fully resolved transactions as enriched. Failed API calls
     # remain pending so a later manual or scheduled run can retry them.
@@ -729,13 +820,15 @@ async def enrich_history_prices_for_account(account: Account, db: Session):
     db.commit()
 
     return {
-        "status": "partial_error" if errors else "ok",
+        "status": "partial_error" if errors or deferred_prices else "ok",
         "transactions_processed": len(unenriched),
         "transactions_synced": transactions_synced,
         "transactions_pending": len(unenriched) - transactions_synced,
         "unique_prices_needed": len(needed),
         "already_cached": len(already_cached),
         "api_calls": api_calls,
+        "deferred_prices": deferred_prices,
+        "units_balance": units_balance,
         "errors": errors if errors else None
     }
 

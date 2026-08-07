@@ -108,6 +108,21 @@ import httpx
 from typing import Optional
 from config import DEBANK_ACCESS_KEY
 
+
+async def fetch_debank_units_balance(client: httpx.AsyncClient) -> int:
+    """Return the current DeBank units balance without exposing the access key."""
+    response = await client.get(
+        "https://pro-openapi.debank.com/v1/account/units",
+        headers={"AccessKey": DEBANK_ACCESS_KEY},
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"DeBank units API returned HTTP {response.status_code}")
+
+    balance = response.json().get("balance")
+    if balance is None:
+        raise RuntimeError("DeBank units API response has no balance")
+    return int(balance)
+
 async def fetch_debank_complex_protocols(db: Session, client: httpx.AsyncClient, account_id: str, address: str) -> dict:
     """
     Fetches complex protocol list from Debank for a given address.

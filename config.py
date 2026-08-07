@@ -8,6 +8,15 @@ load_dotenv()
 
 # Configuration
 DEBANK_ACCESS_KEY = os.environ.get("DEBANK_ACCESS_KEY")
+DEBANK_HISTORY_SYNC_MAX_PAGES = max(
+    1, int(os.environ.get("DEBANK_HISTORY_SYNC_MAX_PAGES", 10))
+)
+DEBANK_PRICE_SYNC_MAX_CALLS = max(
+    0, int(os.environ.get("DEBANK_PRICE_SYNC_MAX_CALLS", 20))
+)
+DEBANK_MIN_UNITS_BALANCE = max(
+    0, int(os.environ.get("DEBANK_MIN_UNITS_BALANCE", 100_000))
+)
 COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY")
 COINMARKETCAP_BASE_URL = os.environ.get(
     "COINMARKETCAP_BASE_URL", "https://pro-api.coinmarketcap.com"

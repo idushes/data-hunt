@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import Account
-from config import DEBANK_ACCESS_KEY
+from config import DEBANK_ACCESS_KEY, DEBANK_MIN_UNITS_BALANCE
 
 import logging
 
@@ -39,11 +39,23 @@ async def fetch_and_save_data():
         
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            from utils import fetch_debank_complex_protocols, fetch_debank_token_list
-            from routers.history import (
-                enrich_history_prices_for_account,
-                sync_history_for_account,
+            from utils import (
+                fetch_debank_complex_protocols,
+                fetch_debank_token_list,
+                fetch_debank_units_balance,
             )
+            from routers.history import sync_history_for_account
+
+            try:
+                units_balance = await fetch_debank_units_balance(client)
+                logger.info("DeBank units balance: %d", units_balance)
+                if units_balance < DEBANK_MIN_UNITS_BALANCE:
+                    logger.warning(
+                        "DeBank units balance is below safety threshold %d",
+                        DEBANK_MIN_UNITS_BALANCE,
+                    )
+            except Exception as e:
+                logger.warning("Unable to read DeBank units balance: %s", e)
 
             for account in accounts:
                 if not account.addresses:
@@ -97,19 +109,6 @@ async def fetch_and_save_data():
                             synced_count,
                         )
 
-                    price_result = await enrich_history_prices_for_account(account, db)
-                    if price_result["status"] == "partial_error":
-                        logger.error(
-                            "Price enrichment left %d transaction(s) pending for account %s",
-                            price_result["transactions_pending"],
-                            account.id,
-                        )
-                    else:
-                        logger.info(
-                            "Success (History Prices): account %s, %d transaction(s) updated",
-                            account.id,
-                            price_result.get("transactions_synced", 0),
-                        )
                 except Exception as e:
                     logger.exception(
                         "Exception syncing history for account %s: %s",
