@@ -1,11 +1,8 @@
-import os
-import json
 import httpx
-import time
 from datetime import datetime
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import Account, DebankRequest
+from models import Account
 from config import DEBANK_ACCESS_KEY
 
 import logging
@@ -41,8 +38,12 @@ async def fetch_and_save_data():
         # Let's iterate accounts and their addresses.
         
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             from utils import fetch_debank_complex_protocols, fetch_debank_token_list
+            from routers.history import (
+                enrich_history_prices_for_account,
+                sync_history_for_account,
+            )
 
             for account in accounts:
                 if not account.addresses:
@@ -72,6 +73,49 @@ async def fetch_and_save_data():
 
                     except Exception as e:
                         logger.error(f"Exception fetching {address}: {str(e)}")
+
+                try:
+                    history_result = await sync_history_for_account(account, db)
+                    history_errors = [
+                        result
+                        for result in history_result["results"]
+                        if result["status"] != "success"
+                    ]
+                    synced_count = sum(
+                        result["synced_count"] for result in history_result["results"]
+                    )
+                    if history_errors:
+                        logger.error(
+                            "History sync completed with %d address error(s) for account %s",
+                            len(history_errors),
+                            account.id,
+                        )
+                    else:
+                        logger.info(
+                            "Success (History): account %s, %d new transaction(s)",
+                            account.id,
+                            synced_count,
+                        )
+
+                    price_result = await enrich_history_prices_for_account(account, db)
+                    if price_result["status"] == "partial_error":
+                        logger.error(
+                            "Price enrichment left %d transaction(s) pending for account %s",
+                            price_result["transactions_pending"],
+                            account.id,
+                        )
+                    else:
+                        logger.info(
+                            "Success (History Prices): account %s, %d transaction(s) updated",
+                            account.id,
+                            price_result.get("transactions_synced", 0),
+                        )
+                except Exception as e:
+                    logger.exception(
+                        "Exception syncing history for account %s: %s",
+                        account.id,
+                        e,
+                    )
     
     except Exception as e:
         logger.error(f"Task Failed: {e}")

@@ -63,11 +63,10 @@ class ReadableHistoryItem(BaseModel):
     description: str # Keep for fallback/simple usage
     is_scam: bool
 
-@router.post("/all_history", summary="Update All Transaction History for User Addresses")
-async def update_all_history(
+async def sync_history_for_account(
+    account: Account,
+    db: Session,
     initial_sync_resume: bool = False,
-    account: Account = Depends(get_current_account),
-    db: Session = Depends(get_db)
 ):
     """
     Updates the transaction history for all addresses linked to the authenticated user.
@@ -274,6 +273,15 @@ async def update_all_history(
             })
     
     return {"results": results}
+
+
+@router.post("/all_history", summary="Update All Transaction History for User Addresses")
+async def update_all_history(
+    initial_sync_resume: bool = False,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+):
+    return await sync_history_for_account(account, db, initial_sync_resume)
 
 
 @router.get("/history/readable", response_model=List[ReadableHistoryItem], summary="Get Readable Transaction History")
@@ -576,11 +584,7 @@ async def get_readable_history(
     return result_items
 
 
-@router.post("/enrich_prices", summary="Enrich transaction history with historical token prices")
-async def enrich_prices(
-    account: Account = Depends(get_current_account),
-    db: Session = Depends(get_db)
-):
+async def enrich_history_prices_for_account(account: Account, db: Session):
     """
     Fetches historical token prices from DeBank /v1/token/history_price
     for all non-scam transactions that haven't been enriched yet.
@@ -606,15 +610,21 @@ async def enrich_prices(
 
     # 2. Collect unique (token_id, chain, date) tuples needed
     needed = set()  # (token_id, chain, date_str)
+    needed_by_history = {}
     for hist in unenriched:
         data = hist.json or {}
         if not hist.time_at:
+            needed_by_history[id(hist)] = set()
             continue
         tx_date = datetime.fromtimestamp(hist.time_at).strftime("%Y-%m-%d")
+        history_needed = set()
         for transfer in data.get("sends", []) + data.get("receives", []):
             tid = transfer.get("token_id")
             if tid:
-                needed.add((tid, hist.chain, tx_date))
+                price_key = (tid, hist.chain, tx_date)
+                needed.add(price_key)
+                history_needed.add(price_key)
+        needed_by_history[id(hist)] = history_needed
 
     if not needed:
         # Mark all as synced (no tokens to price)
@@ -634,6 +644,12 @@ async def enrich_prices(
         scam_tokens = {obj.id for obj in scam_objs}
     
     needed = {(tid, chain, date) for tid, chain, date in needed if tid not in scam_tokens}
+    for hist in unenriched:
+        needed_by_history[id(hist)] = {
+            price_key
+            for price_key in needed_by_history[id(hist)]
+            if price_key[0] not in scam_tokens
+        }
 
     # 4. Check which are already cached
     already_cached = set()
@@ -656,6 +672,7 @@ async def enrich_prices(
     # 5. Fetch missing prices from DeBank
     api_calls = 0
     errors = []
+    resolved = set(already_cached)
     
     if to_fetch:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -686,6 +703,9 @@ async def enrich_prices(
                                 set_={"price": float(price)}
                             )
                             db.execute(stmt)
+                        # A successful response with no price is definitive for this
+                        # token/date and should not be retried forever.
+                        resolved.add((token_id, chain, date_str))
                     else:
                         errors.append(f"{token_id}@{chain}/{date_str}: HTTP {response.status_code}")
                         logger.warning(f"Failed to fetch price for {token_id} on {chain} at {date_str}: {response.status_code}")
@@ -699,16 +719,30 @@ async def enrich_prices(
 
             db.commit()  # Commit all price inserts
 
-    # 6. Mark transactions as enriched
+    # 6. Mark only fully resolved transactions as enriched. Failed API calls
+    # remain pending so a later manual or scheduled run can retry them.
+    transactions_synced = 0
     for hist in unenriched:
-        hist.prices_synced = True
+        hist.prices_synced = needed_by_history[id(hist)].issubset(resolved)
+        if hist.prices_synced:
+            transactions_synced += 1
     db.commit()
 
     return {
-        "status": "ok",
+        "status": "partial_error" if errors else "ok",
         "transactions_processed": len(unenriched),
+        "transactions_synced": transactions_synced,
+        "transactions_pending": len(unenriched) - transactions_synced,
         "unique_prices_needed": len(needed),
         "already_cached": len(already_cached),
         "api_calls": api_calls,
         "errors": errors if errors else None
     }
+
+
+@router.post("/enrich_prices", summary="Enrich transaction history with historical token prices")
+async def enrich_prices(
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+):
+    return await enrich_history_prices_for_account(account, db)
