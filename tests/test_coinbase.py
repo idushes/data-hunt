@@ -9,6 +9,7 @@ from routers.coinbase import (
     _build_auth_header,
     _build_coinbase_jwt,
     _fetch_coinbase_accounts,
+    _fetch_coinbase_default_portfolio_breakdowns,
     _fetch_coinbase_portfolio_breakdowns,
     _next_page_params,
     _render_coinbase_csv,
@@ -180,6 +181,38 @@ class CoinbasePortfolioBreakdownTest(unittest.IsolatedAsyncioTestCase):
             client.requests[1]["url"].endswith(f"{COINBASE_PORTFOLIOS_PATH}/portfolio-1"),
             True,
         )
+        self.assertEqual(client.requests[1]["params"], {"currency": "USD"})
+
+    async def test_skips_default_portfolio_without_key_access(self):
+        client = FakeCoinbaseClient(
+            [
+                FakeCoinbaseResponse(
+                    {
+                        "portfolios": [
+                            {
+                                "uuid": "default-portfolio",
+                                "name": "Default",
+                                "deleted": False,
+                            }
+                        ]
+                    }
+                ),
+                FakeCoinbaseResponse(
+                    {
+                        "error": "PERMISSION_DENIED",
+                        "message": "User does not have access to portfolio",
+                    },
+                    status_code=403,
+                ),
+            ]
+        )
+
+        result = await _fetch_coinbase_default_portfolio_breakdowns(
+            client, "Bearer token", None, None
+        )
+
+        self.assertEqual(result, [])
+        self.assertEqual(client.requests[0]["params"], {"portfolio_type": "DEFAULT"})
 
 
 class CoinbaseCsvTest(unittest.TestCase):
@@ -304,6 +337,59 @@ class CoinbaseCsvTest(unittest.TestCase):
         self.assertIn("perp_position,btc-perp,BTC PERP,BTC,BTC-PERP,perp,0.1751,BTC", content)
         self.assertIn(",LONG,62563.3,64178.2,283.90,1422.3,10,", content)
 
+    def test_renders_stable_total_across_default_and_intx_portfolios(self):
+        content = _render_coinbase_csv(
+            [],
+            [
+                {
+                    "portfolio": {
+                        "uuid": "default-portfolio",
+                        "name": "Primary",
+                        "type": "DEFAULT",
+                    },
+                    "portfolio_balances": {
+                        "total_balance": {"value": "3590.355915", "currency": "USD"}
+                    },
+                },
+                {
+                    "portfolio": {
+                        "uuid": "intx-portfolio",
+                        "name": "Perpetuals",
+                        "type": "INTX",
+                    },
+                    "portfolio_balances": {
+                        "total_balance": {"value": "6.144085", "currency": "USD"}
+                    },
+                },
+            ],
+            include_zero=False,
+        )
+
+        self.assertIn(
+            "portfolio_total,coinbase:total_balance,total_balance,USD,US Dollar,fiat,3596.500000,USD,3596.500000,USD",
+            content,
+        )
+
+    def test_does_not_render_partial_total_without_default_portfolio(self):
+        content = _render_coinbase_csv(
+            [],
+            [
+                {
+                    "portfolio": {
+                        "uuid": "intx-portfolio",
+                        "name": "Perpetuals",
+                        "type": "INTX",
+                    },
+                    "portfolio_balances": {
+                        "total_balance": {"value": "6.144085", "currency": "USD"}
+                    },
+                }
+            ],
+            include_zero=False,
+        )
+
+        self.assertNotIn("coinbase:total_balance", content)
+
 
 class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
     async def test_returns_csv_response(self):
@@ -324,14 +410,20 @@ class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
                 "routers.coinbase._fetch_coinbase_portfolio_breakdowns",
                 new_callable=AsyncMock,
             ) as fetch_portfolios,
+            patch(
+                "routers.coinbase._fetch_coinbase_default_portfolio_breakdowns",
+                new_callable=AsyncMock,
+            ) as fetch_default_portfolios,
         ):
             build_auth.return_value = {"Authorization": "Bearer token"}
             fetch.return_value = accounts
             fetch_portfolios.return_value = []
+            fetch_default_portfolios.return_value = []
             response = await get_coinbase_balance("token")
 
         build_auth.assert_called_once()
         fetch.assert_awaited_once()
+        fetch_default_portfolios.assert_awaited_once()
         fetch_portfolios.assert_awaited_once()
         self.assertEqual(response.media_type, "text/csv")
         self.assertIn("btc-account", response.body.decode())

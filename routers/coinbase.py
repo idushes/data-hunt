@@ -20,6 +20,8 @@ COINBASE_PORTFOLIOS_PATH = "/api/v3/brokerage/portfolios"
 COINBASE_MAX_PAGES = 100
 COINBASE_API_KEY_NAME_ENV = "COINBASE_API_KEY_NAME"
 COINBASE_API_KEY_SECRET_ENV = "COINBASE_API_KEY_SECRET"
+COINBASE_PRIMARY_API_KEY_NAME_ENV = "COINBASE_PRIMARY_API_KEY_NAME"
+COINBASE_PRIMARY_API_KEY_SECRET_ENV = "COINBASE_PRIMARY_API_KEY_SECRET"
 
 COINBASE_CSV_HEADER = [
     "source",
@@ -324,6 +326,33 @@ async def _fetch_coinbase_intx_portfolios(
     ]
 
 
+async def _fetch_coinbase_default_portfolios(
+    client: httpx.AsyncClient,
+    token: str | None,
+    key_name: str | None,
+    key_secret: str | None,
+) -> list[dict[str, object]]:
+    headers = _build_auth_header(token, key_name, key_secret, COINBASE_PORTFOLIOS_PATH)
+    payload = await _fetch_coinbase_json(
+        client,
+        COINBASE_PORTFOLIOS_PATH,
+        headers,
+        {"portfolio_type": "DEFAULT"},
+    )
+
+    portfolios = payload.get("portfolios", [])
+    if not isinstance(portfolios, list):
+        raise HTTPException(
+            status_code=502, detail="Unexpected Coinbase portfolios response format"
+        )
+
+    return [
+        item
+        for item in portfolios
+        if isinstance(item, dict) and not bool(item.get("deleted"))
+    ]
+
+
 async def _fetch_coinbase_portfolio_breakdown(
     client: httpx.AsyncClient,
     token: str | None,
@@ -333,7 +362,7 @@ async def _fetch_coinbase_portfolio_breakdown(
 ) -> dict[str, object]:
     path = f"{COINBASE_PORTFOLIOS_PATH}/{portfolio_uuid}"
     headers = _build_auth_header(token, key_name, key_secret, path)
-    payload = await _fetch_coinbase_json(client, path, headers)
+    payload = await _fetch_coinbase_json(client, path, headers, {"currency": "USD"})
 
     breakdown = payload.get("breakdown", {})
     if not isinstance(breakdown, dict):
@@ -366,6 +395,55 @@ async def _fetch_coinbase_portfolio_breakdowns(
         )
 
     return breakdowns
+
+
+async def _fetch_coinbase_default_portfolio_breakdowns(
+    client: httpx.AsyncClient,
+    token: str | None,
+    key_name: str | None,
+    key_secret: str | None,
+) -> list[dict[str, object]]:
+    try:
+        portfolios = await _fetch_coinbase_default_portfolios(
+            client, token, key_name, key_secret
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            return []
+        raise
+
+    breakdowns: list[dict[str, object]] = []
+    for portfolio in portfolios:
+        portfolio_uuid = str(portfolio.get("uuid") or "").strip()
+        if not portfolio_uuid:
+            continue
+        try:
+            breakdowns.append(
+                await _fetch_coinbase_portfolio_breakdown(
+                    client, token, key_name, key_secret, portfolio_uuid
+                )
+            )
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                continue
+            raise
+
+    return breakdowns
+
+
+def _primary_server_credentials() -> tuple[str | None, str | None]:
+    key_name = os.getenv(COINBASE_PRIMARY_API_KEY_NAME_ENV)
+    key_secret = os.getenv(COINBASE_PRIMARY_API_KEY_SECRET_ENV)
+    if bool(key_name) != bool(key_secret):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Configure both "
+                f"{COINBASE_PRIMARY_API_KEY_NAME_ENV} and "
+                f"{COINBASE_PRIMARY_API_KEY_SECRET_ENV}"
+            ),
+        )
+    return key_name, key_secret
 
 
 def _portfolio_context(breakdown: dict[str, object]) -> tuple[str, str]:
@@ -437,6 +515,65 @@ def _write_portfolio_balance_rows(
                 "",
             ]
         )
+
+
+def _write_total_balance_row(
+    writer: object,
+    portfolio_breakdowns: list[dict[str, object]],
+    include_zero: bool,
+) -> None:
+    has_default = False
+    total = Decimal("0")
+
+    for breakdown in portfolio_breakdowns:
+        portfolio = breakdown.get("portfolio", {})
+        if not isinstance(portfolio, dict):
+            continue
+        if str(portfolio.get("type") or "").upper() == "DEFAULT":
+            has_default = True
+
+        balances = breakdown.get("portfolio_balances", {})
+        if not isinstance(balances, dict):
+            continue
+        total_balance = balances.get("total_balance")
+        if str(_money_currency(total_balance) or "").upper() != "USD":
+            continue
+        total += _decimal_or_zero(_money_value(total_balance))
+
+    if not has_default or (not include_zero and total == 0):
+        return
+
+    writer.writerow(
+        [
+            "portfolio_total",
+            "coinbase:total_balance",
+            "total_balance",
+            "USD",
+            "US Dollar",
+            "fiat",
+            _normalize_number(total),
+            "USD",
+            _normalize_number(total),
+            "USD",
+            "",
+            "",
+            "portfolio_total",
+            "All portfolios",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "portfolio_total",
+            COINBASE_PORTFOLIOS_PATH,
+            "",
+            "",
+        ]
+    )
 
 
 def _write_spot_position_rows(
@@ -562,6 +699,8 @@ def _render_coinbase_csv(
     writer = csv.writer(output)
     writer.writerow(COINBASE_CSV_HEADER)
 
+    _write_total_balance_row(writer, portfolio_breakdowns, include_zero)
+
     for account in accounts:
         if not include_zero and not _has_positive_balance(account):
             continue
@@ -611,7 +750,8 @@ def _render_coinbase_csv(
     summary="Export Coinbase balances for Google Sheets",
     description=(
         "Returns a CSV table with Coinbase App account balances from /v2/accounts "
-        "and INTX portfolio balances/positions from /api/v3/brokerage/portfolios. "
+        "and Default/INTX portfolio balances and positions from "
+        "/api/v3/brokerage/portfolios. "
         "Pass either a ready Bearer token, key_name/key_secret from a downloaded "
         "Coinbase API key, or configure Coinbase credentials in environment variables."
     ),
@@ -636,20 +776,35 @@ async def get_coinbase_balance(
     ),
     include_portfolios: bool = Query(
         True,
-        description="Include Coinbase INTX portfolio balances and positions.",
+        description="Include Coinbase Default/INTX portfolio balances and positions.",
     ),
 ):
-    account_headers = _build_auth_header(token, key_name, key_secret)
+    primary_key_name: str | None = None
+    primary_key_secret: str | None = None
+    if token is None and key_name is None and key_secret is None:
+        primary_key_name, primary_key_secret = _primary_server_credentials()
+
+    account_key_name = primary_key_name or key_name
+    account_key_secret = primary_key_secret or key_secret
+    account_headers = _build_auth_header(token, account_key_name, account_key_secret)
 
     async with httpx.AsyncClient(timeout=20.0) as client:
         accounts = await _fetch_coinbase_accounts(client, account_headers)
-        portfolio_breakdowns = (
-            await _fetch_coinbase_portfolio_breakdowns(
-                client, token, key_name, key_secret
+        portfolio_breakdowns: list[dict[str, object]] = []
+        if include_portfolios:
+            portfolio_breakdowns.extend(
+                await _fetch_coinbase_default_portfolio_breakdowns(
+                    client,
+                    token,
+                    primary_key_name or key_name,
+                    primary_key_secret or key_secret,
+                )
             )
-            if include_portfolios
-            else []
-        )
+            portfolio_breakdowns.extend(
+                await _fetch_coinbase_portfolio_breakdowns(
+                    client, token, key_name, key_secret
+                )
+            )
 
     return Response(
         content=_render_coinbase_csv(accounts, portfolio_breakdowns, include_zero),
