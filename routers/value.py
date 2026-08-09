@@ -33,6 +33,7 @@ VALUE_SOURCES = {
     "aave": ValueSource("/aave/positions.csv", "position_id"),
     "uniswap": ValueSource("/uniswap/positions.csv", "position_id"),
     "stablecoins": ValueSource("/stablecoins/balances.csv", "balance_id"),
+    "stakedao": ValueSource("/stakedao/positions.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column"}
 
