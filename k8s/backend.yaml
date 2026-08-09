@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: data-hunt
-          image: dushes/data-hunt@sha256:008fcfcabb6878f0cd6239086af3caf423cab67788cda2c9a396b7f3f18f1b12
+          image: dushes/data-hunt@sha256:8429ccc3cc4125537dcd01c336cc3560c0ab21450a4ecea86add853fbaedb9f1
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
