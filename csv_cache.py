@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import time
 from collections import OrderedDict
@@ -21,13 +22,15 @@ class CachedCSVResponse:
 
 
 class CSVMemoryCacheMiddleware(BaseHTTPMiddleware):
-    """Caches successful GET CSV responses in process memory."""
+    """Caches successful GET CSV responses and coalesces concurrent misses."""
 
     def __init__(self, app, ttl_seconds: int = 60, max_entries: int = 256):
         super().__init__(app)
         self.ttl_seconds = max(60, ttl_seconds)
         self.max_entries = max(1, max_entries)
         self._cache: OrderedDict[str, CachedCSVResponse] = OrderedDict()
+        self._inflight: dict[str, asyncio.Event] = {}
+        self._inflight_lock = asyncio.Lock()
 
     @staticmethod
     def _cache_key(request: Request) -> str:
@@ -92,32 +95,56 @@ class CSVMemoryCacheMiddleware(BaseHTTPMiddleware):
         if cached is not None:
             return self._response_from_cache(cached)
 
-        response = await call_next(request)
-        content_type = response.headers.get("content-type", "").lower()
-        if response.status_code != 200 or not content_type.startswith("text/csv"):
-            return response
+        async with self._inflight_lock:
+            cached = self._get(key)
+            if cached is not None:
+                return self._response_from_cache(cached)
 
-        body = await self._read_body(response)
-        raw_headers = tuple(
-            (key, value)
-            for key, value in response.raw_headers
-            if key.lower() != b"x-csv-cache"
-        )
-        self._set(
-            key,
-            CachedCSVResponse(
+            flight = self._inflight.get(key)
+            is_leader = flight is None
+            if flight is None:
+                flight = asyncio.Event()
+                self._inflight[key] = flight
+
+        if not is_leader:
+            await flight.wait()
+            cached = self._get(key)
+            if cached is not None:
+                return self._response_from_cache(cached)
+            return await call_next(request)
+
+        try:
+            response = await call_next(request)
+            content_type = response.headers.get("content-type", "").lower()
+            if response.status_code != 200 or not content_type.startswith(
+                "text/csv"
+            ):
+                return response
+
+            body = await self._read_body(response)
+            raw_headers = tuple(
+                (header, value)
+                for header, value in response.raw_headers
+                if header.lower() != b"x-csv-cache"
+            )
+            cached = CachedCSVResponse(
                 expires_at=time.monotonic() + self.ttl_seconds,
                 body=body,
                 status_code=response.status_code,
                 raw_headers=raw_headers,
-            ),
-        )
+            )
+            self._set(key, cached)
 
-        fresh_response = Response(
-            content=body,
-            status_code=response.status_code,
-            background=response.background,
-        )
-        fresh_response.raw_headers = list(raw_headers)
-        fresh_response.headers["X-CSV-Cache"] = "MISS"
-        return fresh_response
+            fresh_response = Response(
+                content=body,
+                status_code=response.status_code,
+                background=response.background,
+            )
+            fresh_response.raw_headers = list(raw_headers)
+            fresh_response.headers["X-CSV-Cache"] = "MISS"
+            return fresh_response
+        finally:
+            async with self._inflight_lock:
+                current_flight = self._inflight.pop(key, None)
+                if current_flight is not None:
+                    current_flight.set()

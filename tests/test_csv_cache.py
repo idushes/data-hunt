@@ -1,5 +1,7 @@
+import asyncio
 import unittest
 
+import httpx
 from fastapi import FastAPI, Header
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
@@ -86,6 +88,55 @@ class CSVMemoryCacheMiddlewareTest(unittest.TestCase):
         self.assertEqual(second.text, "2")
         self.assertNotIn("x-csv-cache", second.headers)
         self.assertEqual(calls["text"], 2)
+
+
+class CSVMemoryCacheSingleFlightTest(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_cache_misses_share_one_csv_request(self):
+        app = FastAPI()
+        calls = 0
+        arrivals = 0
+        all_arrived = asyncio.Event()
+        request_count = 8
+
+        app.add_middleware(
+            CSVMemoryCacheMiddleware,
+            ttl_seconds=60,
+            max_entries=16,
+        )
+
+        @app.middleware("http")
+        async def count_arrivals(request, call_next):
+            nonlocal arrivals
+            arrivals += 1
+            if arrivals == request_count:
+                all_arrived.set()
+            return await call_next(request)
+
+        @app.get("/slow.csv")
+        async def slow_csv():
+            nonlocal calls
+            calls += 1
+            await asyncio.wait_for(all_arrived.wait(), timeout=1)
+            return Response(content="id,value\none,42\n", media_type="text/csv")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            responses = await asyncio.gather(
+                *(client.get("/slow.csv") for _ in range(request_count))
+            )
+
+        self.assertEqual(calls, 1)
+        self.assertTrue(
+            all(response.text == "id,value\none,42\n" for response in responses)
+        )
+        cache_results = [
+            response.headers["x-csv-cache"] for response in responses
+        ]
+        self.assertEqual(cache_results.count("MISS"), 1)
+        self.assertEqual(cache_results.count("HIT"), request_count - 1)
 
 
 if __name__ == "__main__":
