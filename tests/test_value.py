@@ -66,8 +66,8 @@ class StableValueRouteTest(unittest.TestCase):
 
         self.assertEqual(normal.status_code, 200)
         self.assertEqual(reversed_rows.status_code, 200)
-        self.assertEqual(normal.text.strip(), "20")
-        self.assertEqual(reversed_rows.text.strip(), "20")
+        self.assertEqual(normal.text, "20")
+        self.assertEqual(reversed_rows.text, "20")
         self.assertTrue(normal.headers["content-type"].startswith("text/csv"))
 
     def test_forwards_source_query_parameters(self):
@@ -77,7 +77,7 @@ class StableValueRouteTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.text.strip(), "123.45")
+        self.assertEqual(response.text, "123.45")
 
     def test_rejects_unknown_column(self):
         with TestClient(self.app) as client:

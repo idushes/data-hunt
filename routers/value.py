@@ -50,7 +50,7 @@ def _source_error(response: httpx.Response) -> str:
 def _render_single_cell(value: str) -> str:
     output = io.StringIO()
     csv.writer(output).writerow([value])
-    return output.getvalue()
+    return output.getvalue().rstrip("\r\n")
 
 
 @router.get(
