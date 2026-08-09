@@ -12,6 +12,8 @@ from fastapi.responses import Response
 
 
 FLUID_API_URL = "https://api.fluid.io"
+FLUID_LITE_ETH_API_URL = "https://api.instadapp.io"
+FLUID_LITE_USD_API_URL = "https://api.fluid-lite.instadapp.ai"
 FLUID_SUPPORTED_CHAINS = {
     1: "ethereum",
     137: "polygon",
@@ -240,6 +242,86 @@ def _parse_smart_lending_positions(
     return rows
 
 
+def _parse_lite_eth_position(
+    wallet: str, chain_id: int, payload: object
+) -> list[dict[str, str]]:
+    if chain_id != 1 or not isinstance(payload, list):
+        return []
+
+    vault = next(
+        (
+            item
+            for item in payload
+            if isinstance(item, dict) and str(item.get("version")) == "2"
+        ),
+        None,
+    )
+    if not isinstance(vault, dict):
+        return []
+
+    amount = _decimal_or_zero(vault.get("userSupplyAmount"))
+    if amount <= 0:
+        return []
+
+    asset = vault.get("token")
+    if not isinstance(asset, dict):
+        return []
+
+    row = _empty_row(wallet, chain_id, "lite_eth")
+    row["position_id"] = str(vault.get("vault", ""))
+    row["market"] = "Fluid Lite ETH"
+    row["contract_address"] = str(vault.get("vault", ""))
+    supply_usd = _add_side_to_row(
+        row,
+        "supply",
+        [(asset, amount, _usd_value(amount, asset))],
+    )
+    row["net_usd"] = _format_decimal(supply_usd)
+    return [row]
+
+
+def _parse_lite_usd_position(
+    wallet: str,
+    chain_id: int,
+    vault_payload: object,
+    user_payload: object,
+) -> list[dict[str, str]]:
+    if chain_id != 1:
+        return []
+    if not isinstance(vault_payload, dict) or not vault_payload.get("success"):
+        return []
+    if not isinstance(user_payload, dict) or not user_payload.get("success"):
+        return []
+
+    vault = vault_payload.get("data")
+    user = user_payload.get("data")
+    if not isinstance(vault, dict) or not isinstance(user, dict):
+        return []
+    asset = vault.get("underlyingAsset")
+    if not isinstance(asset, dict):
+        return []
+
+    amount = _scale_amount(user.get("assets"), asset.get("decimals"))
+    if amount <= 0:
+        return []
+
+    normalized_asset = {
+        **asset,
+        "price": asset.get("price", "0"),
+    }
+    row = _empty_row(wallet, chain_id, "lite_usdc")
+    row["position_id"] = str(vault.get("address", ""))
+    row["market"] = str(vault.get("symbol", "Fluid Lite USD"))
+    row["contract_address"] = str(vault.get("address", ""))
+    supply_usd = _add_side_to_row(
+        row,
+        "supply",
+        [(normalized_asset, amount, _usd_value(amount, normalized_asset))],
+    )
+    row["net_usd"] = _format_decimal(supply_usd)
+    return [row]
+
+
 def _parse_vault_positions(
     wallet: str, chain_id: int, payload: object
 ) -> list[dict[str, str]]:
@@ -292,8 +374,12 @@ def _parse_vault_positions(
 
 
 async def _fetch_json(client: httpx.AsyncClient, path: str) -> object:
+    return await _fetch_json_url(client, f"{FLUID_API_URL}{path}")
+
+
+async def _fetch_json_url(client: httpx.AsyncClient, url: str) -> object:
     try:
-        response = await client.get(f"{FLUID_API_URL}{path}")
+        response = await client.get(url)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as exc:
@@ -310,18 +396,44 @@ async def _fetch_json(client: httpx.AsyncClient, path: str) -> object:
 async def _fetch_fluid_rows(
     client: httpx.AsyncClient, wallet: str, chain_id: int
 ) -> list[dict[str, str]]:
-    lending, vaults, smart_lending = await asyncio.gather(
+    core_requests = [
         _fetch_json(client, f"/v2/lending/{chain_id}/users/{wallet}/positions"),
         _fetch_json(client, f"/v2/{chain_id}/users/{wallet}/nfts"),
         _fetch_json(
             client, f"/v2/smart-lending/{chain_id}/users/{wallet}/positions"
         ),
-    )
-    return [
+    ]
+    if chain_id == 1:
+        core_requests.extend(
+            [
+                _fetch_json_url(
+                    client,
+                    f"{FLUID_LITE_ETH_API_URL}/v2/mainnet/lite/users/{wallet}/vaults",
+                ),
+                _fetch_json_url(client, f"{FLUID_LITE_USD_API_URL}/lite-usd/vault"),
+                _fetch_json_url(
+                    client,
+                    f"{FLUID_LITE_USD_API_URL}/lite-usd/vault/user/{wallet}",
+                ),
+            ]
+        )
+
+    payloads = await asyncio.gather(*core_requests)
+    lending, vaults, smart_lending = payloads[:3]
+    rows = [
         *_parse_lending_positions(wallet, chain_id, lending),
         *_parse_vault_positions(wallet, chain_id, vaults),
         *_parse_smart_lending_positions(wallet, chain_id, smart_lending),
     ]
+    if chain_id == 1:
+        lite_eth, lite_usd_vault, lite_usd_user = payloads[3:]
+        rows.extend(_parse_lite_eth_position(wallet, chain_id, lite_eth))
+        rows.extend(
+            _parse_lite_usd_position(
+                wallet, chain_id, lite_usd_vault, lite_usd_user
+            )
+        )
+    return rows
 
 
 def _render_csv(rows: list[dict[str, str]]) -> str:

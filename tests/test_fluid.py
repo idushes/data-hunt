@@ -7,6 +7,8 @@ from fastapi import HTTPException
 
 from routers.fluid import (
     _parse_lending_positions,
+    _parse_lite_eth_position,
+    _parse_lite_usd_position,
     _parse_smart_lending_positions,
     _parse_vault_positions,
     _render_csv,
@@ -142,6 +144,52 @@ class FluidPositionParserTest(unittest.TestCase):
         self.assertEqual(rows[0]["supply_amount_1"], "1.2")
         self.assertEqual(rows[0]["supply_amount_2"], "0.8")
         self.assertEqual(rows[0]["net_usd"], "2")
+
+    def test_parses_lite_eth_position(self):
+        rows = _parse_lite_eth_position(
+            WALLET,
+            1,
+            [
+                {
+                    "version": "2",
+                    "vault": "0xliteeth",
+                    "userSupplyAmount": "1.5",
+                    "token": {"symbol": "ETH", "price": "2000"},
+                }
+            ],
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["position_type"], "lite_eth")
+        self.assertEqual(rows[0]["supply_amount_1"], "1.5")
+        self.assertEqual(rows[0]["net_usd"], "3000")
+
+    def test_parses_lite_usd_position(self):
+        rows = _parse_lite_usd_position(
+            WALLET,
+            1,
+            {
+                "success": True,
+                "data": {
+                    "address": "0xliteusd",
+                    "symbol": "fLiteUSD",
+                    "underlyingAsset": {
+                        "symbol": "USDC",
+                        "decimals": 6,
+                        "price": "0.9995",
+                    },
+                },
+            },
+            {
+                "success": True,
+                "data": {"assets": "29182750875"},
+            },
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["position_type"], "lite_usdc")
+        self.assertEqual(rows[0]["supply_amount_1"], "29182.750875")
+        self.assertEqual(rows[0]["net_usd"], "29168.1594995625")
 
     def test_csv_has_stable_header_when_there_are_no_positions(self):
         parsed = list(csv.reader(io.StringIO(_render_csv([]))))
