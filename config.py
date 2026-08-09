@@ -27,6 +27,8 @@ COINMARKETCAP_BASE_URL = os.environ.get(
 COINMARKETCAP_CACHE_TTL_SECONDS = min(
     int(os.environ.get("COINMARKETCAP_CACHE_TTL_SECONDS", 3600)), 3600
 )
+CSV_CACHE_TTL_SECONDS = max(60, int(os.environ.get("CSV_CACHE_TTL_SECONDS", 60)))
+CSV_CACHE_MAX_ENTRIES = max(1, int(os.environ.get("CSV_CACHE_MAX_ENTRIES", 256)))
 UPDATE_INTERVAL = os.environ.get("UPDATE_INTERVAL", "24h")
 PORT = int(os.environ.get("PORT", 8111))
 RUN_ON_STARTUP = os.environ.get("RUN_ON_STARTUP", "false").lower() == "true"

@@ -9,6 +9,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from config import (
+    CSV_CACHE_MAX_ENTRIES,
+    CSV_CACHE_TTL_SECONDS,
     DEBANK_ACCESS_KEY,
     DEBANK_AUTO_SYNC_ENABLED,
     PORT,
@@ -16,6 +18,7 @@ from config import (
     get_scheduler_trigger_args,
     RUN_ON_STARTUP,
 )
+from csv_cache import CSVMemoryCacheMiddleware
 from tasks import fetch_and_save_data
 
 
@@ -131,6 +134,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+app.add_middleware(
+    CSVMemoryCacheMiddleware,
+    ttl_seconds=CSV_CACHE_TTL_SECONDS,
+    max_entries=CSV_CACHE_MAX_ENTRIES,
 )
 
 app.include_router(debt_router)
