@@ -8,6 +8,9 @@ load_dotenv()
 
 # Configuration
 DEBANK_ACCESS_KEY = os.environ.get("DEBANK_ACCESS_KEY")
+DEBANK_AUTO_SYNC_ENABLED = (
+    os.environ.get("DEBANK_AUTO_SYNC_ENABLED", "false").lower() == "true"
+)
 DEBANK_HISTORY_SYNC_MAX_PAGES = max(
     1, int(os.environ.get("DEBANK_HISTORY_SYNC_MAX_PAGES", 10))
 )

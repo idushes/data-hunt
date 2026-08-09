@@ -10,6 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from config import (
     DEBANK_ACCESS_KEY,
+    DEBANK_AUTO_SYNC_ENABLED,
     PORT,
     get_target_ids,
     get_scheduler_trigger_args,
@@ -44,38 +45,43 @@ async def lifespan(app: FastAPI):
     if not DEBANK_ACCESS_KEY:
         logger.warning("DEBANK_ACCESS_KEY is not set in environment variables!")
 
-    ids = get_target_ids()
-    logger.info(f"Scheduler configured. Target IDs: {ids}")
+    scheduler = None
+    if DEBANK_AUTO_SYNC_ENABLED:
+        ids = get_target_ids()
+        logger.info(f"DeBank scheduler configured. Target IDs: {ids}")
 
-    if RUN_ON_STARTUP:
-        logger.info("RUN_ON_STARTUP is True. Executing fetch task now...")
-        await fetch_and_save_data()
+        if RUN_ON_STARTUP:
+            logger.info("RUN_ON_STARTUP is True. Executing DeBank fetch task now...")
+            await fetch_and_save_data()
 
-    trigger_args = get_scheduler_trigger_args()
+        trigger_args = get_scheduler_trigger_args()
+        scheduler = AsyncIOScheduler()
+        # Support both CronTrigger and IntervalTrigger based on config
+        if trigger_args["trigger"] == "cron":
+            trigger = CronTrigger(
+                hour=trigger_args["hour"], minute=trigger_args["minute"]
+            )
+            scheduler.add_job(fetch_and_save_data, trigger)
+            logger.info(
+                "DeBank scheduler started. Task will run daily at %02d:%02d",
+                trigger_args["hour"],
+                trigger_args["minute"],
+            )
+        else:
+            kwargs = trigger_args.copy()
+            kwargs.pop("trigger")
+            scheduler.add_job(fetch_and_save_data, "interval", **kwargs)
+            logger.info("DeBank scheduler started with interval: %s", kwargs)
 
-    scheduler = AsyncIOScheduler()
-    # Support both CronTrigger and IntervalTrigger based on config
-    if trigger_args["trigger"] == "cron":
-        trigger = CronTrigger(hour=trigger_args["hour"], minute=trigger_args["minute"])
-        logger.info(
-            f"Scheduler started. Task will run daily at {trigger_args['hour']:02d}:{trigger_args['minute']:02d}"
-        )
+        scheduler.start()
     else:
-        # Remove 'trigger' key safely
-        kwargs = trigger_args.copy()
-        kwargs.pop("trigger")
-        scheduler.add_job(fetch_and_save_data, "interval", **kwargs)
-        logger.info(f"Scheduler started. Task will run with interval: {kwargs}")
-
-    if trigger_args["trigger"] == "cron":
-        scheduler.add_job(fetch_and_save_data, trigger)
-
-    scheduler.start()
+        logger.info("Automatic DeBank updates are disabled")
 
     yield
 
     # Shutdown logic
-    scheduler.shutdown()
+    if scheduler is not None:
+        scheduler.shutdown()
 
 
 from routers.debt import router as debt_router

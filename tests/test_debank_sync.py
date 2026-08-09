@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from routers.history import enrich_history_prices_for_account, sync_history_for_account
+from server import lifespan
 from tasks import fetch_and_save_data
 
 
@@ -203,6 +204,24 @@ class HistoryPaginationSafetyTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ScheduledDebankSyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_automatic_debank_sync_is_disabled(self):
+        scheduler = MagicMock()
+        fetch_task = AsyncMock()
+
+        with (
+            patch("server.DEBANK_AUTO_SYNC_ENABLED", False),
+            patch("server.RUN_ON_STARTUP", True),
+            patch("server.fetch_and_save_data", fetch_task),
+            patch("server.AsyncIOScheduler", return_value=scheduler) as scheduler_cls,
+            patch("alembic.command.upgrade"),
+        ):
+            async with lifespan(MagicMock()):
+                pass
+
+        fetch_task.assert_not_awaited()
+        scheduler_cls.assert_not_called()
+        scheduler.start.assert_not_called()
+
     async def test_scheduler_refreshes_portfolio_and_history_without_prices(self):
         account = SimpleNamespace(
             id="account-1",
