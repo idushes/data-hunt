@@ -31,6 +31,7 @@ VALUE_SOURCES = {
     ),
     "fluid": ValueSource("/fluid/positions.csv", "position_id"),
     "aave": ValueSource("/aave/positions.csv", "position_id"),
+    "uniswap": ValueSource("/uniswap/positions.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column"}
 

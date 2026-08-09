@@ -103,6 +103,7 @@ from routers.coinbase import router as coinbase_router
 from routers.solana import router as solana_router
 from routers.fluid import router as fluid_router
 from routers.aave import router as aave_router
+from routers.uniswap import router as uniswap_router
 from routers.value import router as value_router
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -157,6 +158,7 @@ app.include_router(coinbase_router)
 app.include_router(solana_router)
 app.include_router(fluid_router)
 app.include_router(aave_router)
+app.include_router(uniswap_router)
 app.include_router(value_router)
 
 app.include_router(auth_router)
