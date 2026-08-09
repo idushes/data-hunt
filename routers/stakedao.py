@@ -12,6 +12,11 @@ from fastapi.responses import Response
 
 
 STAKEDAO_API_URL = "https://api.stakedao.org/api"
+STAKEDAO_APP_URL = "https://www.stakedao.org/strategy"
+BLOCKSCOUT_API_URL = "https://eth.blockscout.com/api/v2"
+CURVE_POOLS_API_URL = (
+    "https://api.curve.finance/v1/getPools/ethereum/factory-stable-ng"
+)
 STAKEDAO_CACHE_TTL_SECONDS = 60
 STAKEDAO_STRATEGY_PROTOCOLS = ("curve", "pendle", "balancer")
 STAKEDAO_CHAINS = {
@@ -22,6 +27,9 @@ STAKEDAO_CHAINS = {
     }
 }
 BALANCE_OF_SELECTOR = "70a08231"
+ASSET_SELECTOR = "38d52e0f"
+TOTAL_ASSETS_SELECTOR = "01e1d114"
+TOTAL_SUPPLY_SELECTOR = "18160ddd"
 STAKEDAO_CSV_HEADER = [
     "wallet",
     "chain_id",
@@ -44,6 +52,7 @@ STAKEDAO_CSV_HEADER = [
     "apr_max_percent",
     "tvl_usd",
     "source_url",
+    "underlying_tvl_usd",
 ]
 
 router = APIRouter(prefix="/stakedao", tags=["stakedao"])
@@ -96,6 +105,22 @@ async def _fetch_json(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(
             status_code=502, detail="Stake DAO API returned invalid data"
+        )
+    return payload
+
+
+async def _fetch_list(client: httpx.AsyncClient, url: str) -> list[object]:
+    try:
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502, detail="Stake DAO position discovery failed"
+        ) from exc
+    if not isinstance(payload, list):
+        raise HTTPException(
+            status_code=502, detail="Stake DAO position discovery returned invalid data"
         )
     return payload
 
@@ -211,6 +236,200 @@ def _locker_targets(payload: dict[str, Any], chain_id: int) -> list[dict[str, An
     return targets
 
 
+def _v2_vault_candidates(payload: list[object]) -> list[dict[str, Any]]:
+    candidates = []
+    for value in payload:
+        balance = _dict(value)
+        token = _dict(balance.get("token"))
+        name = _text(token.get("name"))
+        symbol = _text(token.get("symbol"))
+        address = _text(token.get("address_hash")).lower()
+        raw_balance = _decimal(balance.get("value"))
+        if (
+            raw_balance is None
+            or raw_balance <= 0
+            or not re.fullmatch(r"0x[0-9a-f]{40}", address)
+            or not name.lower().startswith("stake dao ")
+            or not symbol.lower().startswith("sd-")
+            or not symbol.lower().endswith("-vault")
+        ):
+            continue
+        candidates.append(
+            {
+                "position_contract": address,
+                "name": name.removeprefix("Stake DAO ").removesuffix(" Vault"),
+                "vault_symbol": symbol,
+            }
+        )
+        if len(candidates) >= 25:
+            break
+    return candidates
+
+
+def _rpc_result_by_id(payload: object) -> dict[int, str]:
+    if not isinstance(payload, list):
+        return {}
+    return {
+        item["id"]: item["result"]
+        for item in payload
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), int)
+        and isinstance(item.get("result"), str)
+        and item["result"] != "0x"
+    }
+
+
+async def _fetch_v2_vault_states(
+    client: httpx.AsyncClient,
+    rpc_url: str,
+    wallet: str,
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    encoded_wallet = wallet[2:].rjust(64, "0")
+    calls = []
+    selectors = (
+        f"{BALANCE_OF_SELECTOR}{encoded_wallet}",
+        ASSET_SELECTOR,
+        TOTAL_ASSETS_SELECTOR,
+        TOTAL_SUPPLY_SELECTOR,
+    )
+    for index, candidate in enumerate(candidates):
+        for offset, selector in enumerate(selectors):
+            calls.append(
+                {
+                    "jsonrpc": "2.0",
+                    "id": index * len(selectors) + offset,
+                    "method": "eth_call",
+                    "params": [
+                        {
+                            "to": candidate["position_contract"],
+                            "data": f"0x{selector}",
+                        },
+                        "latest",
+                    ],
+                }
+            )
+    if not calls:
+        return []
+
+    try:
+        response = await client.post(rpc_url, json=calls)
+        response.raise_for_status()
+        results = _rpc_result_by_id(response.json())
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502, detail="Stake DAO V2 RPC request failed"
+        ) from exc
+
+    states = []
+    for index, candidate in enumerate(candidates):
+        base = index * len(selectors)
+        try:
+            shares = int(results[base], 16)
+            asset_result = results[base + 1]
+            total_assets = int(results[base + 2], 16)
+            total_supply = int(results[base + 3], 16)
+        except (KeyError, ValueError):
+            continue
+        asset_address = f"0x{asset_result[-40:]}".lower()
+        if (
+            shares <= 0
+            or total_assets <= 0
+            or total_supply <= 0
+            or not re.fullmatch(r"0x[0-9a-f]{40}", asset_address)
+        ):
+            continue
+        states.append(
+            {
+                **candidate,
+                "asset_address": asset_address,
+                "raw_balance": shares * total_assets // total_supply,
+                "total_assets": total_assets,
+            }
+        )
+    return states
+
+
+def _curve_pools_by_lp(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    pools = _dict(payload.get("data")).get("poolData")
+    if not isinstance(pools, list):
+        return {}
+    by_lp = {}
+    for value in pools:
+        pool = _dict(value)
+        lp_token = (
+            _text(pool.get("lpTokenAddress")) or _text(pool.get("address"))
+        ).lower()
+        if re.fullmatch(r"0x[0-9a-f]{40}", lp_token):
+            by_lp[lp_token] = pool
+    return by_lp
+
+
+def _v2_vault_targets(
+    states: list[dict[str, Any]],
+    curve_payload: dict[str, Any],
+    chain_id: int,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    pools = _curve_pools_by_lp(curve_payload)
+    targets = []
+    balances = []
+    for state in states:
+        asset_address = _text(state.get("asset_address"))
+        pool = pools.get(asset_address)
+        if pool is None:
+            continue
+        pool_decimals = pool.get("decimals")
+        decimals = (
+            int(pool_decimals)
+            if isinstance(pool_decimals, (int, str))
+            else 18
+        )
+        total_supply = _decimal(pool.get("totalSupply"))
+        underlying_tvl = _decimal(pool.get("usdTotal"))
+        if total_supply is None or total_supply <= 0 or underlying_tvl is None:
+            continue
+        lp_supply = total_supply / (Decimal(10) ** decimals)
+        price = underlying_tvl / lp_supply
+        gauge_apy = pool.get("gaugeCrvApy")
+        apy_values = (
+            [_decimal(value) for value in gauge_apy]
+            if isinstance(gauge_apy, list)
+            else []
+        )
+        apy_values = [value for value in apy_values if value is not None]
+        vault_tvl = (
+            Decimal(int(state["total_assets"]))
+            / (Decimal(10) ** decimals)
+            * price
+        )
+        contract = _text(state.get("position_contract"))
+        targets.append(
+            {
+                "product": "strategy",
+                "protocol": "curve",
+                "strategy_key": _text(pool.get("id")),
+                "name": _text(pool.get("name")) or _text(state.get("name")),
+                "position_type": "vault_v2",
+                "position_contract": contract,
+                "asset_symbol": _text(pool.get("symbol")),
+                "asset_address": asset_address,
+                "decimals": decimals,
+                "price_usd": price,
+                "apr_current_percent": "",
+                "apr_projected_percent": max(apy_values, default=None),
+                "apr_min_percent": min(apy_values, default=None),
+                "apr_max_percent": max(apy_values, default=None),
+                "tvl_usd": vault_tvl,
+                "underlying_tvl_usd": underlying_tvl,
+                "source_url": (
+                    f"{STAKEDAO_APP_URL}?protocol=curve&vault={chain_id}-{contract}"
+                ),
+            }
+        )
+        balances.append(int(state["raw_balance"]))
+    return targets, balances
+
+
 async def _fetch_balances(
     client: httpx.AsyncClient,
     rpc_url: str,
@@ -314,6 +533,9 @@ def _build_rows(
                     _decimal(target.get("apr_max_percent"))
                 ),
                 "tvl_usd": _format_decimal(_decimal(target.get("tvl_usd"))),
+                "underlying_tvl_usd": _format_decimal(
+                    _decimal(target.get("underlying_tvl_usd"))
+                ),
                 "source_url": _text(target.get("source_url")),
             }
         )
@@ -334,7 +556,7 @@ async def _fetch_stakedao_rows(
     async with httpx.AsyncClient(
         timeout=30.0, trust_env=False, follow_redirects=True
     ) as client:
-        strategy_payloads, lockers = await asyncio.gather(
+        strategy_payloads, lockers, token_balances = await asyncio.gather(
             asyncio.gather(
                 *(
                     _fetch_json(
@@ -345,6 +567,10 @@ async def _fetch_stakedao_rows(
                 )
             ),
             _fetch_json(client, f"{STAKEDAO_API_URL}/lockers"),
+            _fetch_list(
+                client,
+                f"{BLOCKSCOUT_API_URL}/addresses/{wallet}/token-balances",
+            ),
         )
         targets = []
         for protocol, payload in zip(
@@ -354,7 +580,30 @@ async def _fetch_stakedao_rows(
         targets.extend(_locker_targets(lockers, chain_id))
 
         rpc_url = os.getenv(str(chain["rpc_env"])) or str(chain["rpc_url"])
-        balances = await _fetch_balances(client, rpc_url, wallet, targets)
+        balances, v2_states = await asyncio.gather(
+            _fetch_balances(client, rpc_url, wallet, targets),
+            _fetch_v2_vault_states(
+                client,
+                rpc_url,
+                wallet,
+                _v2_vault_candidates(token_balances),
+            ),
+        )
+        if v2_states:
+            curve_payload = await _fetch_json(client, CURVE_POOLS_API_URL)
+            existing_contracts = {
+                _text(target.get("position_contract")) for target in targets
+            }
+            v2_states = [
+                state
+                for state in v2_states
+                if _text(state.get("position_contract")) not in existing_contracts
+            ]
+            v2_targets, v2_balances = _v2_vault_targets(
+                v2_states, curve_payload, chain_id
+            )
+            targets.extend(v2_targets)
+            balances.extend(v2_balances)
 
     return _build_rows(wallet, chain_id, str(chain["name"]), targets, balances)
 
