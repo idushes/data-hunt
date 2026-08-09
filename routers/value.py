@@ -30,6 +30,7 @@ VALUE_SOURCES = {
         "/solana/kamino-positions.csv", "vault_address"
     ),
     "fluid": ValueSource("/fluid/positions.csv", "position_id"),
+    "aave": ValueSource("/aave/positions.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column"}
 
