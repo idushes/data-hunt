@@ -98,6 +98,7 @@ from routers.lighter import router as lighter_router
 from routers.hyperliquid import router as hyperliquid_router
 from routers.coinbase import router as coinbase_router
 from routers.solana import router as solana_router
+from routers.fluid import router as fluid_router
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -144,6 +145,7 @@ app.include_router(lighter_router)
 app.include_router(hyperliquid_router)
 app.include_router(coinbase_router)
 app.include_router(solana_router)
+app.include_router(fluid_router)
 
 app.include_router(auth_router)
 app.include_router(chains_router)
