@@ -4,6 +4,7 @@ import io
 import os
 import re
 from decimal import Decimal
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -16,6 +17,7 @@ from routers.solana import SOLANA_RPC_ENDPOINT, _is_solana_address, _solana_rpc_
 
 
 STABLECOINS_CACHE_TTL_SECONDS = 60
+MAX_WALLETS_PER_REQUEST = 20
 ETHEREUM_RPC_ENDPOINT = "https://ethereum-rpc.publicnode.com"
 ARBITRUM_RPC_ENDPOINT = "https://arbitrum-one-rpc.publicnode.com"
 BASE_RPC_ENDPOINT = "https://base-rpc.publicnode.com"
@@ -148,6 +150,36 @@ def _normalize_tron_wallet(wallet: str) -> str:
     if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}", normalized):
         raise HTTPException(status_code=400, detail="Invalid TRON wallet address")
     return normalized
+
+
+def _split_wallets(
+    value: str | None,
+    normalizer: Callable[[str], str],
+    wallet_type: str,
+) -> list[str]:
+    if not value:
+        return []
+
+    wallets: list[str] = []
+    seen: set[str] = set()
+    for candidate in re.split(r"[,;\n]+", value):
+        if not candidate.strip():
+            continue
+        normalized = normalizer(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        wallets.append(normalized)
+
+    if len(wallets) > MAX_WALLETS_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Too many {wallet_type} wallets. "
+                f"Maximum: {MAX_WALLETS_PER_REQUEST}"
+            ),
+        )
+    return wallets
 
 
 def _format_balance(raw_amount: int, decimals: int) -> str:
@@ -366,29 +398,36 @@ async def _fetch_stablecoin_rows(
     chain_id: int = 1,
     tron_address: str | None = None,
 ) -> list[dict[str, str]]:
-    normalized_address = _normalize_evm_address(address) if address else None
-    normalized_wallet = _normalize_solana_wallet(wallet) if wallet else None
-    normalized_tron = _normalize_tron_wallet(tron_address) if tron_address else None
-    if (
-        normalized_address is None
-        and normalized_wallet is None
-        and normalized_tron is None
-    ):
+    evm_wallets = _split_wallets(address, _normalize_evm_address, "EVM")
+    solana_wallets = _split_wallets(wallet, _normalize_solana_wallet, "Solana")
+    tron_wallets = _split_wallets(tron_address, _normalize_tron_wallet, "TRON")
+    wallet_count = len(evm_wallets) + len(solana_wallets) + len(tron_wallets)
+    if wallet_count > MAX_WALLETS_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many wallets. Maximum total: {MAX_WALLETS_PER_REQUEST}",
+        )
+    if not evm_wallets and not solana_wallets and not tron_wallets:
         raise HTTPException(
             status_code=400,
             detail="Provide at least one EVM, Solana, or TRON wallet address",
         )
 
     async with queued_async_client(timeout=20.0, trust_env=False) as client:
-        tasks = []
-        if normalized_address:
-            tasks.append(
-                _fetch_evm_balances(client, normalized_address, chain_id)
-            )
-        if normalized_wallet:
-            tasks.append(_fetch_solana_balances(client, normalized_wallet))
-        if normalized_tron:
-            tasks.append(_fetch_tron_balances(client, normalized_tron))
+        tasks = [
+            *(
+                _fetch_evm_balances(client, evm_wallet, chain_id)
+                for evm_wallet in evm_wallets
+            ),
+            *(
+                _fetch_solana_balances(client, solana_wallet)
+                for solana_wallet in solana_wallets
+            ),
+            *(
+                _fetch_tron_balances(client, tron_wallet)
+                for tron_wallet in tron_wallets
+            ),
+        ]
         groups = await asyncio.gather(*tasks)
     return [row for group in groups for row in group]
 
@@ -403,19 +442,25 @@ def _render_csv(rows: list[dict[str, str]]) -> str:
 
 @router.get(
     "/balances.csv",
-    summary="Export EVM and Solana USDC/USDT balances",
+    summary="Export EVM, Solana, and TRON USDC/USDT balances",
     description=(
-        "Returns stable USDC and USDT balance rows for an EVM address, "
-        "a Solana wallet, a TRON wallet, or any combination. Zero balances "
-        "are included."
+        "Returns stablecoin balance rows for one or more EVM, Solana, and "
+        "TRON wallets. Pass multiple wallets as comma-separated values. "
+        "Zero balances are included."
     ),
     responses={200: {"content": {"text/csv": {}}}},
 )
 async def get_stablecoin_balances_csv(
-    address: str | None = Query(None, description="Ethereum wallet address."),
-    wallet: str | None = Query(None, description="Solana wallet address."),
+    address: str | None = Query(
+        None, description="Comma-separated EVM wallet addresses."
+    ),
+    wallet: str | None = Query(
+        None, description="Comma-separated Solana wallet addresses."
+    ),
     chain_id: int = Query(1, description="EVM chain ID: 1, 8453, or 42161."),
-    tron_address: str | None = Query(None, description="TRON wallet address."),
+    tron_address: str | None = Query(
+        None, description="Comma-separated TRON wallet addresses."
+    ),
 ):
     rows = await _fetch_stablecoin_rows(address, wallet, chain_id, tron_address)
     return Response(

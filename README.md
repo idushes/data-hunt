@@ -29,6 +29,13 @@ Provider defaults live in `outbound_queue.py`. Override individual limits with
 OUTBOUND_API_LIMITS_JSON={"coinbase":{"requests":5,"period_seconds":1,"concurrency":2}}
 ```
 
+## Multi-wallet stablecoin balances
+
+`GET /stablecoins/balances.csv` accepts up to 20 wallets per request across
+EVM, Solana, and TRON. Pass multiple wallets in `address`, `wallet`, or
+`tron_address` as comma-separated values. Duplicate addresses are removed
+before the queued RPC requests are created.
+
 ## Coinbase credential capsules
 
 Coinbase credentials are accepted only by `POST /coinbase/capsule`, validated

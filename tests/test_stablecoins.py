@@ -16,7 +16,9 @@ from routers.stablecoins import (
     _fetch_stablecoin_rows,
     _fetch_tron_balances,
     _format_balance,
+    _normalize_evm_address,
     _render_csv,
+    _split_wallets,
     _sum_solana_token_accounts,
     get_stablecoin_balances_csv,
 )
@@ -133,6 +135,43 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
             await _fetch_stablecoin_rows(None, None)
 
         self.assertEqual(context.exception.status_code, 400)
+
+    def test_splits_normalizes_and_deduplicates_multiple_evm_wallets(self):
+        other_wallet = "0x94CE9ae15c739552EeBB8A8746C0CA33c3d369Ce"
+
+        wallets = _split_wallets(
+            f"{EVM_WALLET},{other_wallet};{EVM_WALLET.upper().replace('0X', '0x')}",
+            _normalize_evm_address,
+            "EVM",
+        )
+
+        self.assertEqual(wallets, [EVM_WALLET, other_wallet.lower()])
+
+    async def test_fetches_multiple_wallets_in_one_table(self):
+        other_wallet = "0x94ce9ae15c739552eebb8a8746c0ca33c3d369ce"
+        first_rows = [{"balance_id": "first"}]
+        second_rows = [{"balance_id": "second"}]
+        with patch(
+            "routers.stablecoins._fetch_evm_balances",
+            AsyncMock(side_effect=[first_rows, second_rows]),
+        ) as fetch:
+            rows = await _fetch_stablecoin_rows(
+                f"{EVM_WALLET},{other_wallet}", None
+            )
+
+        self.assertEqual(rows, [*first_rows, *second_rows])
+        self.assertEqual(fetch.await_count, 2)
+        self.assertEqual(fetch.await_args_list[0].args[1:], (EVM_WALLET, 1))
+        self.assertEqual(fetch.await_args_list[1].args[1:], (other_wallet, 1))
+
+    async def test_limits_total_wallets_per_request(self):
+        wallets = ",".join(f"0x{index:040x}" for index in range(1, 22))
+
+        with self.assertRaises(HTTPException) as context:
+            await _fetch_stablecoin_rows(wallets, None)
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertIn("Maximum", context.exception.detail)
 
     async def test_reads_tron_balances_in_one_request(self):
         response = httpx.Response(
