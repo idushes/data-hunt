@@ -68,6 +68,13 @@ DEFAULT_POLICIES = (
     ProviderPolicy("lido", ("eth-api.lido.fi",), 3, 1, 2),
     ProviderPolicy("jupiter_perps", ("perps-api.jup.ag",), 3, 1, 2),
     ProviderPolicy("trongrid", ("api.trongrid.io",), 2, 1, 2),
+    ProviderPolicy(
+        "gmx",
+        ("arbitrum.gmxapi.io", "avalanche.gmxapi.io"),
+        3,
+        1,
+        2,
+    ),
 )
 FALLBACK_POLICY = ProviderPolicy("other", (), 2, 1, 2)
 
