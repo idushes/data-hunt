@@ -1,7 +1,7 @@
 import unittest
 import json
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from fastapi import HTTPException
 
@@ -41,7 +41,9 @@ class CoinbaseAuthHeaderTest(unittest.TestCase):
         payload = encode.call_args.args[0]
         self.assertEqual(payload["sub"], "organizations/org/apiKeys/key")
         self.assertEqual(payload["iss"], "cdp")
-        self.assertEqual(payload["uri"], f"GET api.coinbase.com{COINBASE_ACCOUNTS_PATH}")
+        self.assertEqual(
+            payload["uri"], f"GET api.coinbase.com{COINBASE_ACCOUNTS_PATH}"
+        )
         self.assertEqual(encode.call_args.kwargs["algorithm"], "ES256")
 
     def test_builds_auth_header_from_api_key_only(self):
@@ -229,13 +231,17 @@ class CoinbasePortfolioBreakdownTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result[0]["portfolio"]["name"], "Perpetuals")
-        self.assertEqual(client.requests[0]["url"].endswith(COINBASE_PORTFOLIOS_PATH), True)
+        self.assertEqual(
+            client.requests[0]["url"].endswith(COINBASE_PORTFOLIOS_PATH), True
+        )
         self.assertEqual(
             client.requests[0]["params"],
             {"portfolio_type": "INTX"},
         )
         self.assertEqual(
-            client.requests[1]["url"].endswith(f"{COINBASE_PORTFOLIOS_PATH}/portfolio-1"),
+            client.requests[1]["url"].endswith(
+                f"{COINBASE_PORTFOLIOS_PATH}/portfolio-1"
+            ),
             True,
         )
         self.assertEqual(client.requests[1]["params"], {"currency": "USD"})
@@ -275,6 +281,30 @@ class CoinbasePortfolioBreakdownTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
         self.assertEqual(client.requests[0]["params"], {"portfolio_type": "DEFAULT"})
 
+    async def test_skips_intx_portfolios_without_key_access(self):
+        client = FakeCoinbaseClient(
+            [
+                FakeCoinbaseResponse(
+                    {
+                        "error": "PERMISSION_DENIED",
+                        "message": "User does not have access to portfolio",
+                    },
+                    status_code=403,
+                )
+            ]
+        )
+
+        with patch(
+            "routers.coinbase._build_auth_header",
+            return_value={"Authorization": "Bearer token"},
+        ):
+            result = await _fetch_coinbase_portfolio_breakdowns(
+                client, "main-key", "main-secret"
+            )
+
+        self.assertEqual(result, [])
+        self.assertEqual(client.requests[0]["params"], {"portfolio_type": "INTX"})
+
 
 class CoinbaseCsvTest(unittest.TestCase):
     def test_renders_positive_balances_by_default(self):
@@ -308,7 +338,9 @@ class CoinbaseCsvTest(unittest.TestCase):
             include_zero=False,
         )
 
-        self.assertIn("account,btc-account,BTC Wallet,BTC,Bitcoin,crypto,1.2,BTC", content)
+        self.assertIn(
+            "account,btc-account,BTC Wallet,BTC,Bitcoin,crypto,1.2,BTC", content
+        )
         self.assertNotIn("zero-account", content)
 
     def test_can_include_zero_balances(self):
@@ -393,9 +425,15 @@ class CoinbaseCsvTest(unittest.TestCase):
             include_zero=False,
         )
 
-        self.assertIn("portfolio_balance,portfolio-1:total_cash_equivalent_balance", content)
-        self.assertIn("spot_position,usdc-account,USDC,USDC,,cash,80253.341573,USDC", content)
-        self.assertIn("perp_position,btc-perp,BTC PERP,BTC,BTC-PERP,perp,0.1751,BTC", content)
+        self.assertIn(
+            "portfolio_balance,portfolio-1:total_cash_equivalent_balance", content
+        )
+        self.assertIn(
+            "spot_position,usdc-account,USDC,USDC,,cash,80253.341573,USDC", content
+        )
+        self.assertIn(
+            "perp_position,btc-perp,BTC PERP,BTC,BTC-PERP,perp,0.1751,BTC", content
+        )
         self.assertIn(",LONG,62563.3,64178.2,283.90,1422.3,10,", content)
 
     def test_renders_stable_total_across_default_and_intx_portfolios(self):
@@ -569,6 +607,7 @@ class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
             fetch_default_portfolios.return_value = []
             response = await get_coinbase_balance(
                 capsule="dhc1.v1.encrypted",
+                intx_capsule=None,
                 include_zero=False,
                 include_portfolios=True,
             )
@@ -580,3 +619,58 @@ class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
         fetch_portfolios.assert_awaited_once()
         self.assertEqual(response.media_type, "text/csv")
         self.assertIn("btc-account", response.body.decode())
+
+    async def test_uses_a_separate_intx_capsule_for_perpetuals(self):
+        with (
+            patch("routers.coinbase.decrypt_coinbase_credentials") as decrypt,
+            patch("routers.coinbase._build_auth_header") as build_auth,
+            patch(
+                "routers.coinbase._fetch_coinbase_accounts",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "routers.coinbase._fetch_coinbase_portfolio_breakdowns",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as fetch_intx,
+            patch(
+                "routers.coinbase._fetch_coinbase_default_portfolio_breakdowns",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as fetch_default,
+        ):
+            main_credentials = type(
+                "Credentials",
+                (),
+                {"key_name": "main-key", "key_secret": "main-secret"},
+            )()
+            intx_credentials = type(
+                "Credentials",
+                (),
+                {"key_name": "intx-key", "key_secret": "intx-secret"},
+            )()
+            decrypt.side_effect = [main_credentials, intx_credentials]
+            build_auth.return_value = {"Authorization": "Bearer main"}
+
+            await get_coinbase_balance(
+                capsule="main-capsule",
+                intx_capsule="intx-capsule",
+                include_zero=False,
+                include_portfolios=True,
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in decrypt.call_args_list],
+            ["main-capsule", "intx-capsule"],
+        )
+        fetch_default.assert_awaited_once_with(
+            ANY,
+            "main-key",
+            "main-secret",
+        )
+        fetch_intx.assert_awaited_once_with(
+            ANY,
+            "intx-key",
+            "intx-secret",
+        )

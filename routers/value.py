@@ -28,13 +28,9 @@ VALUE_SOURCES = {
     "hyperliquid": ValueSource("/hyperliquid/balance", "account"),
     "coinbase": ValueSource("/coinbase/balance", "id"),
     "gmtrade-assets": ValueSource("/solana/gmtrade.csv", "mint"),
-    "gmtrade-perps": ValueSource(
-        "/solana/gmtrade-perps.csv", "position_address"
-    ),
+    "gmtrade-perps": ValueSource("/solana/gmtrade-perps.csv", "position_address"),
     "kamino-vaults": ValueSource("/solana/kamino.csv", "vault_address"),
-    "kamino-positions": ValueSource(
-        "/solana/kamino-positions.csv", "vault_address"
-    ),
+    "kamino-positions": ValueSource("/solana/kamino-positions.csv", "vault_address"),
     "fluid": ValueSource("/fluid/positions.csv", "position_id"),
     "aave": ValueSource("/aave/positions.csv", "position_id"),
     "uniswap": ValueSource("/uniswap/positions.csv", "position_id"),
@@ -53,7 +49,9 @@ RESOURCE_PARAMETER_NAMES = {
     "paradex": frozenset({"token", "account", "field"}),
     "lighter": frozenset({"token", "account", "accounts", "address", "field"}),
     "hyperliquid": frozenset({"address", "account", "field", "aggregate"}),
-    "coinbase": frozenset({"capsule", "include_zero", "include_portfolios"}),
+    "coinbase": frozenset(
+        {"capsule", "intx_capsule", "include_zero", "include_portfolios"}
+    ),
     "gmtrade-assets": frozenset({"wallet"}),
     "gmtrade-perps": frozenset({"wallet"}),
     "kamino-vaults": frozenset({"wallet"}),
@@ -74,7 +72,7 @@ RESOURCE_PARAMETER_NAMES = {
 RESOURCE_CREDENTIAL_PARAMS = {
     "paradex": frozenset({"token"}),
     "lighter": frozenset({"token"}),
-    "coinbase": frozenset({"capsule"}),
+    "coinbase": frozenset({"capsule", "intx_capsule"}),
 }
 RESOURCE_ID_MIN_BYTES = 9
 RESOURCE_ID_MAX_BYTES = 16
@@ -101,9 +99,7 @@ def _normalize_resource_request(
 ) -> tuple[str, str | None, str | None, dict[str, str]]:
     source = request.source.strip()
     if _resource_source_path(source) is None:
-        supported = ", ".join(
-            sorted(set(VALUE_SOURCES) | set(DIRECT_VALUE_SOURCES))
-        )
+        supported = ", ".join(sorted(set(VALUE_SOURCES) | set(DIRECT_VALUE_SOURCES)))
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported value source. Supported: {supported}",
@@ -191,9 +187,7 @@ def _get_or_create_resource(
 ) -> ValueResource:
     fingerprint = _resource_fingerprint(source, key, column, parameters)
     existing = (
-        db.query(ValueResource)
-        .filter(ValueResource.fingerprint == fingerprint)
-        .first()
+        db.query(ValueResource).filter(ValueResource.fingerprint == fingerprint).first()
     )
     if existing is not None:
         return existing
@@ -347,16 +341,12 @@ async def _resolve_stable_value(
     if not matches:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Row with {source_config.key_column}='{key}' was not found"
-            ),
+            detail=(f"Row with {source_config.key_column}='{key}' was not found"),
         )
     if len(matches) > 1:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"Stable key {source_config.key_column}='{key}' is not unique"
-            ),
+            detail=(f"Stable key {source_config.key_column}='{key}' is not unique"),
         )
 
     return Response(

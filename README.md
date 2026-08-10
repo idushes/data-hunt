@@ -55,6 +55,11 @@ required readonly token or Coinbase capsule only as an additional query
 parameter on `/v/{id}`. The legacy `/value?...` route remains available for
 existing spreadsheets.
 
+Coinbase accepts a required Main `capsule` and an optional separate
+`intx_capsule` for Perpetuals/INTX portfolios. When `intx_capsule` is omitted,
+the Main capsule is reused for backward compatibility. A missing INTX
+permission no longer prevents Main balances from loading.
+
 Signed-in users can request a revocable, non-expiring, read-only token from
 `POST /web3/sheets-token`. The Sheets helper adds it as `auth_token` to new
 short links. It is accepted only by saved-value routes and cannot manage the

@@ -166,6 +166,23 @@ class ValueResourcesTest(unittest.TestCase):
         finally:
             db.close()
 
+    def test_both_coinbase_capsules_are_kept_out_of_the_resource_table(self):
+        response = self.client.post(
+            "/value-resources",
+            json={
+                "source": "coinbase",
+                "key": "coinbase:total_balance",
+                "column": "balance",
+                "parameters": {
+                    "include_portfolios": "true",
+                    "intx_capsule": "dhc1.v2.intx-encrypted",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("must not be stored", response.json()["detail"])
+
     def test_short_route_rejects_parameters_that_do_not_hold_credentials(self):
         resource_id = self._create_stable_resource()
 
