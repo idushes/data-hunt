@@ -12,6 +12,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 
 GRAPHQL_ENDPOINT = "https://gmx-solana-sqd.squids.live/gmx-solana-base:prod/api/graphql"
 SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
@@ -1851,7 +1853,7 @@ def _render_kamino_portfolio_csv(rows: list[dict[str, Any]]) -> str:
 
 
 async def _build_gmtrade_csv_content(normalized_wallet: str) -> str:
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with queued_async_client(timeout=20.0) as client:
         gm_users, glv_users = await asyncio.gather(
             _fetch_required_positions(
                 _fetch_market_gm_users, client, normalized_wallet
@@ -1877,7 +1879,7 @@ async def _build_gmtrade_csv_content(normalized_wallet: str) -> str:
 
 
 async def _build_gmtrade_perp_csv_content(normalized_wallet: str) -> str:
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with queued_async_client(timeout=20.0) as client:
         positions = await _fetch_gmtrade_perp_positions(client, normalized_wallet)
         market_mints = _collect_unique_mints(positions, "market_token_mint")
         market_infos = await _fetch_required_lookup(
@@ -1910,7 +1912,7 @@ async def _build_gmtrade_perp_csv_content(normalized_wallet: str) -> str:
 
 
 async def _build_kamino_csv_content(normalized_wallet: str) -> str:
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with queued_async_client(timeout=20.0) as client:
         resources, token_accounts = await asyncio.gather(
             _fetch_kamino_resources(client),
             _fetch_token_accounts(client, normalized_wallet),
@@ -2003,7 +2005,7 @@ async def _build_kamino_csv_content(normalized_wallet: str) -> str:
 
 
 async def _build_kamino_portfolio_data(normalized_wallet: str) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with queued_async_client(timeout=20.0) as client:
         portfolio, rewards_payload = await asyncio.gather(
             _fetch_kamino_portfolio(client, normalized_wallet),
             _fetch_kamino_rewards(client, normalized_wallet),

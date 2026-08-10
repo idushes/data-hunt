@@ -10,6 +10,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 from routers.solana import SOLANA_RPC_ENDPOINT, _is_solana_address, _solana_rpc_request
 
 
@@ -232,7 +234,7 @@ async def _fetch_stablecoin_rows(
             detail="Provide at least one Ethereum or Solana wallet address",
         )
 
-    async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
+    async with queued_async_client(timeout=20.0, trust_env=False) as client:
         tasks = []
         if normalized_address:
             tasks.append(_fetch_ethereum_balances(client, normalized_address))

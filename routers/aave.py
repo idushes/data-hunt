@@ -9,6 +9,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 
 AAVE_V3_API_URL = "https://api.v3.aave.com/graphql"
 AAVE_V4_API_URL = "https://api.v4.aave.com/graphql"
@@ -610,7 +612,7 @@ async def get_aave_positions_csv(
     chain_id: int = Query(1, gt=0, description="Aave network chain ID."),
 ):
     wallet = _normalize_wallet(address)
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with queued_async_client(timeout=20.0) as client:
         rows = await _fetch_aave_rows(client, wallet, chain_id)
 
     return Response(

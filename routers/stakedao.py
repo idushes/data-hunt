@@ -10,6 +10,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 
 STAKEDAO_API_URL = "https://api.stakedao.org/api"
 STAKEDAO_APP_URL = "https://www.stakedao.org/strategy"
@@ -774,7 +776,7 @@ async def _fetch_stakedao_rows(
             detail=f"Unsupported Stake DAO chain ID. Supported: {supported}",
         )
 
-    async with httpx.AsyncClient(
+    async with queued_async_client(
         timeout=30.0, trust_env=False, follow_redirects=True
     ) as client:
         strategy_payloads, lockers, token_balances = await asyncio.gather(

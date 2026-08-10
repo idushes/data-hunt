@@ -6,11 +6,13 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from config import (
+    CSV_CACHE_FLIGHT_TIMEOUT_SECONDS,
     CSV_CACHE_MAX_ENTRIES,
     CSV_CACHE_TTL_SECONDS,
     PORT,
 )
-from csv_cache import CSVMemoryCacheMiddleware
+from csv_cache import CSVCacheMiddleware
+from redis_client import close_redis_client
 
 
 @asynccontextmanager
@@ -36,6 +38,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error applying migrations: {e}")
 
     yield
+    await close_redis_client()
 
 
 from routers.auth import router as auth_router
@@ -87,9 +90,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(
-    CSVMemoryCacheMiddleware,
+    CSVCacheMiddleware,
     ttl_seconds=CSV_CACHE_TTL_SECONDS,
     max_entries=CSV_CACHE_MAX_ENTRIES,
+    flight_timeout_seconds=CSV_CACHE_FLIGHT_TIMEOUT_SECONDS,
 )
 
 app.include_router(cmc_router)

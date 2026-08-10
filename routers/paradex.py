@@ -6,6 +6,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 
 PARADEX_API_BASE_URL = "https://api.prod.paradex.trade/v1"
 ALLOWED_BALANCE_FIELDS = {
@@ -112,7 +114,7 @@ async def get_paradex_balance(
             detail=f"Unsupported field '{field}'. Allowed: {', '.join(sorted(ALLOWED_BALANCE_FIELDS))}",
         )
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with queued_async_client(timeout=20.0) as client:
         payload = await _fetch_paradex_json(client, "/account/summary", token)
 
     if isinstance(payload, list):

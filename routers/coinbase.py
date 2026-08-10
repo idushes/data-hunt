@@ -11,6 +11,8 @@ import jwt
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 
 COINBASE_API_BASE_URL = "https://api.coinbase.com"
 COINBASE_API_HOST = "api.coinbase.com"
@@ -788,7 +790,7 @@ async def get_coinbase_balance(
     account_key_secret = primary_key_secret or key_secret
     account_headers = _build_auth_header(token, account_key_name, account_key_secret)
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with queued_async_client(timeout=20.0) as client:
         accounts = await _fetch_coinbase_accounts(client, account_headers)
         portfolio_breakdowns: list[dict[str, object]] = []
         if include_portfolios:

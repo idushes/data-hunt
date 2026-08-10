@@ -4,6 +4,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 from config import (
     COINMARKETCAP_API_KEY,
     COINMARKETCAP_BASE_URL,
@@ -52,7 +54,7 @@ async def _fetch_price_from_cmc(
         "X-CMC_PRO_API_KEY": COINMARKETCAP_API_KEY,
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with queued_async_client(timeout=15.0) as client:
         response = await client.get(
             f"{COINMARKETCAP_BASE_URL}/v2/cryptocurrency/quotes/latest",
             params=params,

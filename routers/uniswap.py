@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
+
+from outbound_queue import queued_async_client
 from web3 import Web3
 
 
@@ -388,7 +390,7 @@ async def _fetch_uniswap_rows(
     )
     checksum_wallet = Web3.to_checksum_address(wallet)
 
-    async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
+    async with queued_async_client(timeout=20.0, trust_env=False) as client:
         count_result = _required_call(
             (
                 await _rpc_batch_calls(

@@ -6,6 +6,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 ALLOWED_BALANCE_FIELDS = {
@@ -336,7 +338,7 @@ async def get_hyperliquid_balance(
 
     normalized_address = _normalize_address(address)
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with queued_async_client(timeout=20.0) as client:
         rows = await _build_accounts_rows(client, normalized_address)
 
         if aggregate:

@@ -6,7 +6,74 @@ from fastapi import FastAPI, Header
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
 
-from csv_cache import CSVMemoryCacheMiddleware
+from csv_cache import CSVCacheMiddleware, CSVMemoryCacheMiddleware
+
+
+class FakeRedis:
+    def __init__(self):
+        self.hashes: dict[str, dict[bytes, bytes]] = {}
+        self.values: dict[str, bytes] = {}
+
+    async def hgetall(self, key: str):
+        return self.hashes.get(key, {}).copy()
+
+    async def hset(self, key: str, mapping):
+        self.hashes[key] = {
+            str(field).encode(): value
+            if isinstance(value, bytes)
+            else str(value).encode()
+            for field, value in mapping.items()
+        }
+
+    async def expire(self, key: str, seconds: int):
+        return key in self.hashes
+
+    def pipeline(self, transaction=True):
+        return FakeRedisPipeline(self)
+
+    async def set(self, key: str, value: str, nx=False, ex=None):
+        if nx and key in self.values:
+            return False
+        self.values[key] = value.encode()
+        return True
+
+    async def exists(self, key: str):
+        return key in self.values
+
+    async def eval(self, script: str, key_count: int, key: str, token: str):
+        if self.values.get(key) == token.encode():
+            self.values.pop(key, None)
+            return 1
+        return 0
+
+
+class FakeRedisPipeline:
+    def __init__(self, redis: FakeRedis):
+        self.redis = redis
+        self.commands = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    def hset(self, key: str, mapping):
+        self.commands.append(("hset", key, mapping))
+        return self
+
+    def expire(self, key: str, seconds: int):
+        self.commands.append(("expire", key, seconds))
+        return self
+
+    async def execute(self):
+        results = []
+        for command, key, value in self.commands:
+            if command == "hset":
+                results.append(await self.redis.hset(key, value))
+            else:
+                results.append(await self.redis.expire(key, value))
+        return results
 
 
 def _build_app() -> tuple[FastAPI, dict[str, int]]:
@@ -132,11 +199,97 @@ class CSVMemoryCacheSingleFlightTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(response.text == "id,value\none,42\n" for response in responses)
         )
-        cache_results = [
-            response.headers["x-csv-cache"] for response in responses
-        ]
+        cache_results = [response.headers["x-csv-cache"] for response in responses]
         self.assertEqual(cache_results.count("MISS"), 1)
         self.assertEqual(cache_results.count("HIT"), request_count - 1)
+
+
+class CSVRedisCacheTest(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _redis_app(redis: FakeRedis, calls: dict[str, int]) -> FastAPI:
+        app = FastAPI()
+        app.add_middleware(
+            CSVCacheMiddleware,
+            ttl_seconds=60,
+            max_entries=16,
+            redis_client=redis,
+        )
+
+        @app.get("/shared.csv")
+        async def shared_csv():
+            calls["count"] += 1
+            return Response(content="value\n42\n", media_type="text/csv")
+
+        return app
+
+    async def test_cache_is_shared_between_application_instances(self):
+        redis = FakeRedis()
+        first_calls = {"count": 0}
+        second_calls = {"count": 0}
+        first_app = self._redis_app(redis, first_calls)
+        second_app = self._redis_app(redis, second_calls)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=first_app),
+            base_url="http://first",
+        ) as first_client:
+            first = await first_client.get("/shared.csv")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=second_app),
+            base_url="http://second",
+        ) as second_client:
+            second = await second_client.get("/shared.csv")
+
+        self.assertEqual(first.headers["x-csv-cache"], "MISS")
+        self.assertEqual(first.headers["x-csv-cache-backend"], "redis")
+        self.assertEqual(second.headers["x-csv-cache"], "HIT")
+        self.assertEqual(second.headers["x-csv-cache-backend"], "redis")
+        self.assertEqual(first_calls["count"], 1)
+        self.assertEqual(second_calls["count"], 0)
+
+    async def test_distributed_single_flight_coalesces_instances(self):
+        redis = FakeRedis()
+        calls = {"count": 0}
+
+        def build_app() -> FastAPI:
+            app = FastAPI()
+            app.add_middleware(
+                CSVCacheMiddleware,
+                ttl_seconds=60,
+                max_entries=16,
+                redis_client=redis,
+            )
+
+            @app.get("/slow.csv")
+            async def slow_csv():
+                calls["count"] += 1
+                await asyncio.sleep(0.1)
+                return Response(content="value\n42\n", media_type="text/csv")
+
+            return app
+
+        first_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=build_app()),
+            base_url="http://first",
+        )
+        second_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=build_app()),
+            base_url="http://second",
+        )
+        try:
+            first, second = await asyncio.gather(
+                first_client.get("/slow.csv"),
+                second_client.get("/slow.csv"),
+            )
+        finally:
+            await first_client.aclose()
+            await second_client.aclose()
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(
+            sorted([first.headers["x-csv-cache"], second.headers["x-csv-cache"]]),
+            ["HIT", "MISS"],
+        )
 
 
 if __name__ == "__main__":

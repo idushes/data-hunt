@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-hunt-redis
+  namespace: data-hunt
+  labels:
+    app.kubernetes.io/name: data-hunt-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-hunt-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-hunt-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+          imagePullPolicy: IfNotPresent
+          args:
+            - redis-server
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            - --protected-mode
+            - "no"
+            - --maxmemory
+            - 192mb
+            - --maxmemory-policy
+            - allkeys-lru
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 320Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-hunt-redis
+  namespace: data-hunt
+  labels:
+    app.kubernetes.io/name: data-hunt-redis
+spec:
+  selector:
+    app.kubernetes.io/name: data-hunt-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-hunt-redis
+  namespace: data-hunt
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: data-hunt-redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: data-hunt
+      ports:
+        - protocol: TCP
+          port: 6379

@@ -10,6 +10,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from outbound_queue import queued_async_client
+
 
 FLUID_API_URL = "https://api.fluid.io"
 FLUID_LITE_ETH_API_URL = "https://api.instadapp.io"
@@ -489,7 +491,7 @@ async def get_fluid_positions_csv(
 
     cached = _get_cached_csv(wallet, chain_id)
     if cached is None:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with queued_async_client(timeout=20.0) as client:
             rows = await _fetch_fluid_rows(client, wallet, chain_id)
         cached = _render_csv(rows)
         _set_cached_csv(wallet, chain_id, cached)

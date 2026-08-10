@@ -14,6 +14,20 @@ COINMARKETCAP_CACHE_TTL_SECONDS = min(
 )
 CSV_CACHE_TTL_SECONDS = max(60, int(os.environ.get("CSV_CACHE_TTL_SECONDS", 60)))
 CSV_CACHE_MAX_ENTRIES = max(1, int(os.environ.get("CSV_CACHE_MAX_ENTRIES", 256)))
+CSV_CACHE_FLIGHT_TIMEOUT_SECONDS = max(
+    30, int(os.environ.get("CSV_CACHE_FLIGHT_TIMEOUT_SECONDS", 180))
+)
+REDIS_URL = os.environ.get("REDIS_URL")
+OUTBOUND_QUEUE_ENABLED = os.environ.get(
+    "OUTBOUND_QUEUE_ENABLED", "true"
+).lower() not in {"0", "false", "no"}
+OUTBOUND_QUEUE_MAX_WAIT_SECONDS = max(
+    1, int(os.environ.get("OUTBOUND_QUEUE_MAX_WAIT_SECONDS", 120))
+)
+OUTBOUND_QUEUE_429_RETRIES = max(
+    0, min(5, int(os.environ.get("OUTBOUND_QUEUE_429_RETRIES", 2)))
+)
+OUTBOUND_API_LIMITS_JSON = os.environ.get("OUTBOUND_API_LIMITS_JSON", "")
 PORT = int(os.environ.get("PORT", 8111))
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./data.db")
 SECRET_KEY = os.environ.get(
