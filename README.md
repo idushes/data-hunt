@@ -43,3 +43,14 @@ rotation:
 COINBASE_CAPSULE_ACTIVE_KEY_ID=v2
 COINBASE_CAPSULE_KEYS_JSON={"v1":"<base64url-32-byte-key>","v2":"<base64url-32-byte-key>"}
 ```
+
+## Short value resources
+
+`POST /value-resources` stores a credential-free description of one requested
+cell and returns a reusable short ID. Identical normalized requests reuse one
+database row and ID. Google Sheets can then import the value from `/v/{id}`.
+
+Provider credentials are never accepted in the stored descriptor. Pass a
+required readonly token or Coinbase capsule only as an additional query
+parameter on `/v/{id}`. The legacy `/value?...` route remains available for
+existing spreadsheets.

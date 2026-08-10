@@ -132,3 +132,10 @@ spec:
                 name: data-hunt
                 port:
                   name: http
+          - path: /v
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http

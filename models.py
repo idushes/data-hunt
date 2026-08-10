@@ -5,6 +5,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -43,6 +44,18 @@ class AccountToken(Base):
     is_active = Column(Boolean, default=True)
 
     # But for compatibility with JWT `iat`, Integer (seconds) is fine.
+
+
+class ValueResource(Base):
+    __tablename__ = "value_resource"
+
+    id = Column(String(22), primary_key=True)
+    fingerprint = Column(String(64), nullable=False, unique=True, index=True)
+    source = Column(String(64), nullable=False)
+    key = Column(Text, nullable=True)
+    column = Column(String(128), nullable=True)
+    parameters = Column(JSON, nullable=False, default=dict)
+    created_at = Column(Integer, nullable=False)
 
 
 class FeatureRequest(Base):

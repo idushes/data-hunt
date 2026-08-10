@@ -141,6 +141,9 @@ class PublishedApiContractTest(unittest.TestCase):
             if "GET" in (getattr(route, "methods", None) or set())
         }
         self.assertIn("/value", get_paths)
+        self.assertIn("/v/{resource_id}", get_paths)
+        self.assertIn("/value-resources", app.openapi()["paths"])
+        self.assertIn("post", app.openapi()["paths"]["/value-resources"])
 
     def test_coinbase_uses_capsules_instead_of_raw_credentials(self):
         schema = app.openapi()
