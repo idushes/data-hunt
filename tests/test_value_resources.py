@@ -174,6 +174,14 @@ class ValueResourcesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Unsupported credential parameter", response.json()["detail"])
 
+    def test_short_route_ignores_the_rate_limit_identity_parameter(self):
+        resource_id = self._create_stable_resource()
+
+        response = self.client.get(f"/v/{resource_id}?auth_token=handled-by-middleware")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.text, "123.45")
+
     def test_direct_single_cell_source_uses_the_same_short_route(self):
         created = self.client.post(
             "/value-resources",

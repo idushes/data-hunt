@@ -47,7 +47,7 @@ VALUE_SOURCES = {
     "jupiter-jlp": ValueSource("/jupiter/jlp.csv", "position_id"),
     "gmx": ValueSource("/gmx/positions.csv", "position_id"),
 }
-VALUE_CONTROL_PARAMS = {"source", "key", "column"}
+VALUE_CONTROL_PARAMS = {"source", "key", "column", "auth_token"}
 DIRECT_VALUE_SOURCES = {"cmc-price": "/cmc/price.csv"}
 RESOURCE_PARAMETER_NAMES = {
     "paradex": frozenset({"token", "account", "field"}),
@@ -492,6 +492,8 @@ async def get_value_resource(
     )
     supplied_credentials: list[tuple[str, str]] = []
     for name, value in request.query_params.multi_items():
+        if name == "auth_token":
+            continue
         if name not in credentials:
             raise HTTPException(
                 status_code=400,

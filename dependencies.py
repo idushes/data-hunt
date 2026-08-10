@@ -5,13 +5,12 @@ from sqlalchemy.orm import Session
 from config import SECRET_KEY, ALGORITHM
 from database import get_db
 from models import AccountToken, Account
-import time
 
 security = HTTPBearer(auto_error=False)
 
+
 async def get_current_token_payload(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    token: str = None
+    credentials: HTTPAuthorizationCredentials = Depends(security), token: str = None
 ) -> dict:
     if credentials:
         token = credentials.credentials
@@ -40,34 +39,38 @@ async def get_current_token_payload(
         print(f"Auth Failed: JWT Error: {str(e)}")
         raise credentials_exception
 
+
 def get_current_account(
-    payload: dict = Depends(get_current_token_payload),
-    db: Session = Depends(get_db)
+    payload: dict = Depends(get_current_token_payload), db: Session = Depends(get_db)
 ):
     token_id = payload.get("jti")
     account_id = payload.get("sub")
-    
+
     # Check if token exists and is active in DB
     db_token = db.query(AccountToken).filter(AccountToken.id == token_id).first()
     if not db_token:
         print(f"Auth Failed: Token {token_id} not found in database.")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Token is invalid"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is invalid"
         )
     if not db_token.is_active:
         print(f"Auth Failed: Token {token_id} is inactive (revoked).")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Token has been revoked"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
         )
-    
+    if db_token.purpose != "session" or payload.get("scope") == "sheets":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is not valid for account access",
+        )
+
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         print(f"Auth Failed: Account {account_id} not found.")
         raise HTTPException(status_code=404, detail="Account not found")
-        
+
     return account
+
 
 def get_current_token_id(payload: dict = Depends(get_current_token_payload)) -> str:
     return payload.get("jti")
@@ -102,11 +105,16 @@ def get_optional_current_account(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    db_token = db.query(AccountToken).filter(
-        AccountToken.id == token_id,
-        AccountToken.account_id == account_id,
-        AccountToken.is_active.is_(True),
-    ).first()
+    db_token = (
+        db.query(AccountToken)
+        .filter(
+            AccountToken.id == token_id,
+            AccountToken.account_id == account_id,
+            AccountToken.is_active.is_(True),
+            AccountToken.purpose == "session",
+        )
+        .first()
+    )
     if db_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

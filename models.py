@@ -13,6 +13,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from database import Base
 
+
 class Account(Base):
     __tablename__ = "account"
 
@@ -23,6 +24,7 @@ class Account(Base):
 
     addresses = relationship("AccountAddress", back_populates="account")
 
+
 class AccountAddress(Base):
     __tablename__ = "account_address"
 
@@ -32,16 +34,23 @@ class AccountAddress(Base):
     network = Column(String, nullable=False)
     can_auth = Column(Boolean, default=False)
 
-
     account = relationship("Account", back_populates="addresses")
+
 
 class AccountToken(Base):
     __tablename__ = "account_token"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     account_id = Column(String, ForeignKey("account.id"), nullable=False, index=True)
-    created_at = Column(Integer, nullable=False) # store as timestamp
+    created_at = Column(Integer, nullable=False)  # store as timestamp
     is_active = Column(Boolean, default=True)
+    purpose = Column(
+        String(16),
+        nullable=False,
+        default="session",
+        server_default="session",
+        index=True,
+    )
 
     # But for compatibility with JWT `iat`, Integer (seconds) is fine.
 

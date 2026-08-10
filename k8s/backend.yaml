@@ -41,6 +41,12 @@ spec:
               value: "2"
             - name: CSV_CACHE_FLIGHT_TIMEOUT_SECONDS
               value: "180"
+            - name: VALUE_RATE_LIMIT_WINDOW_SECONDS
+              value: "60"
+            - name: VALUE_RATE_LIMIT_AUTHENTICATED
+              value: "120"
+            - name: VALUE_RATE_LIMIT_ANONYMOUS
+              value: "10"
           readinessProbe:
             httpGet:
               path: /health/readiness

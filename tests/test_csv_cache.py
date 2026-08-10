@@ -122,6 +122,17 @@ class CSVMemoryCacheMiddlewareTest(unittest.TestCase):
         self.assertEqual(first.text, second.text)
         self.assertEqual(calls["csv"], 1)
 
+    def test_sheets_auth_token_does_not_fragment_shared_csv_cache(self):
+        app, calls = _build_app()
+
+        with TestClient(app) as client:
+            first = client.get("/report.csv?value=one&auth_token=user-one")
+            second = client.get("/report.csv?value=one&auth_token=user-two")
+
+        self.assertEqual(first.headers["x-csv-cache"], "MISS")
+        self.assertEqual(second.headers["x-csv-cache"], "HIT")
+        self.assertEqual(calls["csv"], 1)
+
     def test_auth_headers_have_separate_cache_entries(self):
         app, calls = _build_app()
 

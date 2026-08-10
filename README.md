@@ -54,3 +54,12 @@ Provider credentials are never accepted in the stored descriptor. Pass a
 required readonly token or Coinbase capsule only as an additional query
 parameter on `/v/{id}`. The legacy `/value?...` route remains available for
 existing spreadsheets.
+
+Signed-in users can request a revocable, non-expiring, read-only token from
+`POST /web3/sheets-token`. The Sheets helper adds it as `auth_token` to new
+short links. It is accepted only by saved-value routes and cannot manage the
+user account. Requests share a Redis-backed fixed-window limit of 120 per
+minute per authenticated account; anonymous access remains available at 10
+requests per minute per client IP. Configure these limits with
+`VALUE_RATE_LIMIT_AUTHENTICATED`, `VALUE_RATE_LIMIT_ANONYMOUS`, and
+`VALUE_RATE_LIMIT_WINDOW_SECONDS`.

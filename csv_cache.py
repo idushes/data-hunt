@@ -19,7 +19,7 @@ from redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
-CACHE_BUSTER_PARAMS = {"_", "cache_bust", "refresh"}
+CACHE_BUSTER_PARAMS = {"_", "cache_bust", "refresh", "auth_token"}
 RELEASE_LOCK_SCRIPT = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
     return redis.call('DEL', KEYS[1])

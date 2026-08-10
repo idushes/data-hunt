@@ -37,6 +37,15 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24)
 )
+VALUE_RATE_LIMIT_WINDOW_SECONDS = max(
+    1, int(os.environ.get("VALUE_RATE_LIMIT_WINDOW_SECONDS", 60))
+)
+VALUE_RATE_LIMIT_AUTHENTICATED = max(
+    1, int(os.environ.get("VALUE_RATE_LIMIT_AUTHENTICATED", 120))
+)
+VALUE_RATE_LIMIT_ANONYMOUS = max(
+    1, int(os.environ.get("VALUE_RATE_LIMIT_ANONYMOUS", 10))
+)
 FEATURE_REQUEST_ADMIN_ADDRESSES = frozenset(
     address.strip().lower()
     for address in os.environ.get("FEATURE_REQUEST_ADMIN_ADDRESSES", "").split(",")
