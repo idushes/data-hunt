@@ -64,6 +64,7 @@ DEFAULT_POLICIES = (
     ProviderPolicy(
         "arbitrum_rpc", ("arbitrum-one-rpc.publicnode.com",), 4, 1, 4
     ),
+    ProviderPolicy("euler", ("v3.euler.finance",), 3, 1, 2),
 )
 FALLBACK_POLICY = ProviderPolicy("other", (), 2, 1, 2)
 
