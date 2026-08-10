@@ -156,6 +156,13 @@ def _format_balance(raw_amount: int, decimals: int) -> str:
     return format(Decimal(raw_amount) / (Decimal(10) ** decimals), "f")
 
 
+def _evm_balance_id(chain_id: int, wallet: str, symbol: str) -> str:
+    # Keep the original Ethereum identifier stable for formulas generated before
+    # multi-chain EVM balances were introduced.
+    namespace = "ethereum" if chain_id == 1 else "evm"
+    return f"{namespace}:{chain_id}:{wallet}:{symbol}"
+
+
 async def _fetch_evm_balances(
     client: httpx.AsyncClient, wallet: str, chain_id: int
 ) -> list[dict[str, str]]:
@@ -219,7 +226,9 @@ async def _fetch_evm_balances(
             )
         rows.append(
             {
-                "balance_id": f"evm:{chain_id}:{wallet}:{token['symbol']}",
+                "balance_id": _evm_balance_id(
+                    chain_id, wallet, token["symbol"]
+                ),
                 "wallet": wallet,
                 "network": chain["name"],
                 "chain_id": str(chain_id),

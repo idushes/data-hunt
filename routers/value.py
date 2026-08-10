@@ -59,6 +59,16 @@ def _render_single_cell(value: str) -> str:
     return output.getvalue().rstrip("\r\n")
 
 
+def _stable_key_candidates(source: str, key: str) -> tuple[str, ...]:
+    if source != "stablecoins":
+        return (key,)
+    if key.startswith("ethereum:1:"):
+        return (key, key.replace("ethereum:1:", "evm:1:", 1))
+    if key.startswith("evm:1:"):
+        return (key, key.replace("evm:1:", "ethereum:1:", 1))
+    return (key,)
+
+
 @router.get(
     "/value",
     summary="Get one stable value for Google Sheets",
@@ -135,10 +145,11 @@ async def get_stable_value(
             detail=f"Column '{column}' was not found in the source CSV",
         )
 
+    key_candidates = _stable_key_candidates(source, key)
     matches = [
         row
         for row in reader
-        if (row.get(source_config.key_column) or "") == key
+        if (row.get(source_config.key_column) or "") in key_candidates
     ]
     if not matches:
         raise HTTPException(

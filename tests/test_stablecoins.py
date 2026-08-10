@@ -85,6 +85,9 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), len(ETHEREUM_TOKENS))
         self.assertEqual(rows[0]["balance"], "12.345678")
         self.assertEqual(rows[1]["balance"], "0")
+        self.assertEqual(
+            rows[0]["balance_id"], f"ethereum:1:{EVM_WALLET}:USDC"
+        )
 
     async def test_reads_arbitrum_balances_with_stable_ids(self):
         response = httpx.Response(

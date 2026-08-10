@@ -35,6 +35,16 @@ def _build_app() -> FastAPI:
     async def failure():
         raise HTTPException(status_code=418, detail="source failed")
 
+    @app.get("/stablecoins-test.csv")
+    async def stablecoins_test_csv():
+        return Response(
+            content=(
+                "balance_id,balance\n"
+                "ethereum:1:0xwallet:USDT,1.692943\n"
+            ),
+            media_type="text/csv",
+        )
+
     app.include_router(router)
     return app
 
@@ -48,6 +58,9 @@ class StableValueRouteTest(unittest.TestCase):
                 "test": ValueSource("/test.csv", "id"),
                 "plain": ValueSource("/plain", "id"),
                 "failure": ValueSource("/failure", "id"),
+                "stablecoins": ValueSource(
+                    "/stablecoins-test.csv", "balance_id"
+                ),
             },
         )
         self.sources.start()
@@ -123,6 +136,16 @@ class StableValueRouteTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 418)
         self.assertEqual(response.json()["detail"], "source failed")
+
+    def test_accepts_temporary_evm_ethereum_key_alias(self):
+        with TestClient(self.app) as client:
+            response = client.get(
+                "/value?source=stablecoins&key=evm%3A1%3A0xwallet%3AUSDT"
+                "&column=balance"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "1.692943")
 
 
 if __name__ == "__main__":
