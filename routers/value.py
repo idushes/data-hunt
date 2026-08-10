@@ -33,6 +33,7 @@ VALUE_SOURCES = {
     "morpho": ValueSource("/morpho/positions.csv", "position_id"),
     "compound": ValueSource("/compound/positions.csv", "position_id"),
     "euler": ValueSource("/euler/positions.csv", "position_id"),
+    "lido": ValueSource("/lido/positions.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column"}
 
