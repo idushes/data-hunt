@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 from routers.uniswap import (
+    MONAD_USD_STABLECOINS,
     Q96,
+    UNISWAP_CHAINS,
     _fetch_uniswap_rows,
     _human_price,
     _normalize_wallet,
@@ -61,6 +63,22 @@ class UniswapMathTest(unittest.TestCase):
             places=8,
         )
 
+    def test_usd_value_uses_monad_native_usdc(self):
+        wmon = "0x3bd359c1119da7da1d913d1c4d2b7c461115433a"
+        usdc = "0x754704bc059f8c67012fed69bc8a327a5aafb603"
+
+        self.assertEqual(
+            _usd_value(
+                wmon,
+                usdc,
+                Decimal("100000"),
+                Decimal("1000"),
+                Decimal("0.02"),
+                MONAD_USD_STABLECOINS,
+            ),
+            Decimal("3000"),
+        )
+
 
 class UniswapCsvTest(unittest.TestCase):
     def test_renders_stable_position_id_and_amounts(self):
@@ -87,6 +105,19 @@ class UniswapCsvTest(unittest.TestCase):
 
 
 class UniswapValidationTest(unittest.IsolatedAsyncioTestCase):
+    def test_monad_uses_official_uniswap_v3_deployment(self):
+        chain = UNISWAP_CHAINS[143]
+
+        self.assertEqual(chain["name"], "Monad")
+        self.assertEqual(
+            chain["position_manager"],
+            "0x7197e214c0b767cfb76fb734ab638e2c192f4e53",
+        )
+        self.assertEqual(
+            chain["factory"],
+            "0x204faca1764b154221e35c0d20abb3c525710498",
+        )
+
     def test_rejects_invalid_wallet(self):
         with self.assertRaises(HTTPException) as context:
             _normalize_wallet("not-an-address")

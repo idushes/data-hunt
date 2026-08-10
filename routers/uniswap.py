@@ -15,6 +15,15 @@ UNISWAP_CACHE_TTL_SECONDS = 60
 UNISWAP_MAX_POSITIONS = 200
 UNISWAP_V3_POSITION_MANAGER = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
 UNISWAP_V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+ETHEREUM_USD_STABLECOINS = {
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # USDC
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",  # USDT
+    "0x6b175474e89094c44da98b954eedeac495271d0f",  # DAI
+    "0xdc035d45d973e3ec169d2276ddab16f1e407384f",  # USDS
+}
+MONAD_USD_STABLECOINS = {
+    "0x754704bc059f8c67012fed69bc8a327a5aafb603",  # Native USDC
+}
 UNISWAP_CHAINS = {
     1: {
         "name": "Ethereum",
@@ -22,14 +31,18 @@ UNISWAP_CHAINS = {
         "rpc_url": "https://ethereum-rpc.publicnode.com",
         "position_manager": UNISWAP_V3_POSITION_MANAGER,
         "factory": UNISWAP_V3_FACTORY,
-    }
+        "usd_stablecoins": ETHEREUM_USD_STABLECOINS,
+    },
+    143: {
+        "name": "Monad",
+        "rpc_env": "UNISWAP_MONAD_RPC_URL",
+        "rpc_url": "https://rpc.monad.xyz",
+        "position_manager": "0x7197e214c0b767cfb76fb734ab638e2c192f4e53",
+        "factory": "0x204faca1764b154221e35c0d20abb3c525710498",
+        "usd_stablecoins": MONAD_USD_STABLECOINS,
+    },
 }
-USD_STABLECOINS = {
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # USDC
-    "0xdac17f958d2ee523a2206206994597c13d831ec7",  # USDT
-    "0x6b175474e89094c44da98b954eedeac495271d0f",  # DAI
-    "0xdc035d45d973e3ec169d2276ddab16f1e407384f",  # USDS
-}
+USD_STABLECOINS = ETHEREUM_USD_STABLECOINS
 Q96 = Decimal(2**96)
 
 UNISWAP_CSV_HEADER = [
@@ -247,9 +260,11 @@ def _usd_value(
     amount0: Decimal,
     amount1: Decimal,
     price_token1_per_token0: Decimal,
+    usd_stablecoins: set[str] | None = None,
 ) -> Decimal | None:
-    token0_is_usd = token0_address.lower() in USD_STABLECOINS
-    token1_is_usd = token1_address.lower() in USD_STABLECOINS
+    stablecoins = usd_stablecoins or USD_STABLECOINS
+    token0_is_usd = token0_address.lower() in stablecoins
+    token1_is_usd = token1_address.lower() in stablecoins
     if token1_is_usd:
         return amount1 + amount0 * price_token1_per_token0
     if token0_is_usd and price_token1_per_token0 > 0:
@@ -287,13 +302,13 @@ async def _rpc_batch_calls(
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(
             status_code=502,
-            detail="Uniswap Ethereum RPC request failed",
+            detail="Uniswap RPC request failed",
         ) from exc
 
     if not isinstance(items, list):
         raise HTTPException(
             status_code=502,
-            detail="Uniswap Ethereum RPC returned an invalid batch response",
+            detail="Uniswap RPC returned an invalid batch response",
         )
 
     by_id = {
@@ -530,7 +545,12 @@ async def _fetch_uniswap_rows(
             sqrt_price_x96, token0["decimals"], token1["decimals"]
         )
         value_usd = _usd_value(
-            token0_address, token1_address, amount0, amount1, price
+            token0_address,
+            token1_address,
+            amount0,
+            amount1,
+            price,
+            chain.get("usd_stablecoins"),
         )
         rows.append(
             {
