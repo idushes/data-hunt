@@ -55,6 +55,7 @@ from routers.uniswap import router as uniswap_router
 from routers.stablecoins import router as stablecoins_router
 from routers.stakedao import router as stakedao_router
 from routers.morpho import router as morpho_router
+from routers.compound import router as compound_router
 from routers.value import router as value_router
 from routers.feature_requests import router as feature_requests_router
 
@@ -109,6 +110,7 @@ app.include_router(uniswap_router)
 app.include_router(stablecoins_router)
 app.include_router(stakedao_router)
 app.include_router(morpho_router)
+app.include_router(compound_router)
 app.include_router(value_router)
 app.include_router(feature_requests_router)
 

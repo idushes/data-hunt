@@ -31,6 +31,7 @@ VALUE_SOURCES = {
     "stablecoins": ValueSource("/stablecoins/balances.csv", "balance_id"),
     "stakedao": ValueSource("/stakedao/positions.csv", "position_id"),
     "morpho": ValueSource("/morpho/positions.csv", "position_id"),
+    "compound": ValueSource("/compound/positions.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column"}
 

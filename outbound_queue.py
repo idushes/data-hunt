@@ -60,6 +60,10 @@ DEFAULT_POLICIES = (
     ProviderPolicy("blockscout", ("eth.blockscout.com",), 3, 1, 2),
     ProviderPolicy("curve", ("api.curve.finance",), 2, 1, 2),
     ProviderPolicy("morpho", ("api.morpho.org",), 3, 1, 2),
+    ProviderPolicy("base_rpc", ("base-rpc.publicnode.com",), 4, 1, 4),
+    ProviderPolicy(
+        "arbitrum_rpc", ("arbitrum-one-rpc.publicnode.com",), 4, 1, 4
+    ),
 )
 FALLBACK_POLICY = ProviderPolicy("other", (), 2, 1, 2)
 
