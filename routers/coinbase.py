@@ -1,6 +1,6 @@
 import csv
 import io
-import os
+import json
 import secrets
 import time
 from decimal import Decimal, InvalidOperation
@@ -10,7 +10,13 @@ import httpx
 import jwt
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
+from pydantic import BaseModel, SecretStr
 
+from coinbase_capsule import (
+    COINBASE_CAPSULE_MAX_LENGTH,
+    decrypt_coinbase_credentials,
+    encrypt_coinbase_credentials,
+)
 from outbound_queue import queued_async_client
 
 
@@ -19,11 +25,8 @@ COINBASE_API_HOST = "api.coinbase.com"
 COINBASE_ACCOUNTS_PATH = "/v2/accounts"
 COINBASE_ACCOUNTS_LIMIT = "100"
 COINBASE_PORTFOLIOS_PATH = "/api/v3/brokerage/portfolios"
+COINBASE_KEY_PERMISSIONS_PATH = "/api/v3/brokerage/key_permissions"
 COINBASE_MAX_PAGES = 100
-COINBASE_API_KEY_NAME_ENV = "COINBASE_API_KEY_NAME"
-COINBASE_API_KEY_SECRET_ENV = "COINBASE_API_KEY_SECRET"
-COINBASE_PRIMARY_API_KEY_NAME_ENV = "COINBASE_PRIMARY_API_KEY_NAME"
-COINBASE_PRIMARY_API_KEY_SECRET_ENV = "COINBASE_PRIMARY_API_KEY_SECRET"
 
 COINBASE_CSV_HEADER = [
     "source",
@@ -56,6 +59,11 @@ COINBASE_CSV_HEADER = [
 ]
 
 router = APIRouter(prefix="/coinbase", tags=["coinbase"])
+
+
+class CoinbaseCapsuleRequest(BaseModel):
+    key_name: str
+    key_secret: SecretStr
 
 
 def _normalize_number(value: object | None) -> str:
@@ -180,33 +188,12 @@ def _build_coinbase_jwt(
 
 
 def _build_auth_header(
-    token: str | None,
-    key_name: str | None,
-    key_secret: str | None,
+    key_name: str,
+    key_secret: str,
     path: str = COINBASE_ACCOUNTS_PATH,
 ) -> dict[str, str]:
-    if token is not None:
-        normalized_token = token.strip()
-        if not normalized_token:
-            raise HTTPException(status_code=400, detail="Coinbase token is required")
-        if not normalized_token.lower().startswith("bearer "):
-            normalized_token = f"Bearer {normalized_token}"
-        return {"Authorization": normalized_token, "Accept": "application/json"}
-
-    resolved_key_name = key_name or os.getenv(COINBASE_API_KEY_NAME_ENV)
-    resolved_key_secret = key_secret or os.getenv(COINBASE_API_KEY_SECRET_ENV)
-
-    if resolved_key_name and resolved_key_secret:
-        jwt_token = _build_coinbase_jwt(resolved_key_name, resolved_key_secret, path=path)
-        return {"Authorization": f"Bearer {jwt_token}", "Accept": "application/json"}
-
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "Provide Coinbase token, key_name and key_secret, or set "
-            f"{COINBASE_API_KEY_NAME_ENV}/{COINBASE_API_KEY_SECRET_ENV}"
-        ),
-    )
+    jwt_token = _build_coinbase_jwt(key_name, key_secret, path=path)
+    return {"Authorization": f"Bearer {jwt_token}", "Accept": "application/json"}
 
 
 def _next_page_params(next_uri: object | None) -> dict[str, str] | None:
@@ -267,6 +254,42 @@ async def _fetch_coinbase_json(
     return payload
 
 
+async def _validate_view_only_credentials(
+    client: httpx.AsyncClient,
+    key_name: str,
+    key_secret: str,
+) -> dict[str, bool]:
+    headers = _build_auth_header(key_name, key_secret, COINBASE_KEY_PERMISSIONS_PATH)
+    payload = await _fetch_coinbase_json(
+        client,
+        COINBASE_KEY_PERMISSIONS_PATH,
+        headers,
+    )
+    permissions = {
+        "can_view": payload.get("can_view") is True,
+        "can_trade": payload.get("can_trade") is True,
+        "can_transfer": payload.get("can_transfer") is True,
+        "can_receive": payload.get("can_receive") is True,
+    }
+    if not permissions["can_view"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Coinbase API key must have View permission",
+        )
+    if any(
+        permissions[name]
+        for name in ("can_trade", "can_transfer", "can_receive")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Coinbase API key must be View-only. Disable Trade, Transfer, "
+                "and Receive permissions."
+            ),
+        )
+    return permissions
+
+
 async def _fetch_coinbase_accounts(
     client: httpx.AsyncClient,
     headers: dict[str, str],
@@ -303,11 +326,10 @@ async def _fetch_coinbase_accounts(
 
 async def _fetch_coinbase_intx_portfolios(
     client: httpx.AsyncClient,
-    token: str | None,
-    key_name: str | None,
-    key_secret: str | None,
+    key_name: str,
+    key_secret: str,
 ) -> list[dict[str, object]]:
-    headers = _build_auth_header(token, key_name, key_secret, COINBASE_PORTFOLIOS_PATH)
+    headers = _build_auth_header(key_name, key_secret, COINBASE_PORTFOLIOS_PATH)
     payload = await _fetch_coinbase_json(
         client,
         COINBASE_PORTFOLIOS_PATH,
@@ -330,11 +352,10 @@ async def _fetch_coinbase_intx_portfolios(
 
 async def _fetch_coinbase_default_portfolios(
     client: httpx.AsyncClient,
-    token: str | None,
-    key_name: str | None,
-    key_secret: str | None,
+    key_name: str,
+    key_secret: str,
 ) -> list[dict[str, object]]:
-    headers = _build_auth_header(token, key_name, key_secret, COINBASE_PORTFOLIOS_PATH)
+    headers = _build_auth_header(key_name, key_secret, COINBASE_PORTFOLIOS_PATH)
     payload = await _fetch_coinbase_json(
         client,
         COINBASE_PORTFOLIOS_PATH,
@@ -357,13 +378,12 @@ async def _fetch_coinbase_default_portfolios(
 
 async def _fetch_coinbase_portfolio_breakdown(
     client: httpx.AsyncClient,
-    token: str | None,
-    key_name: str | None,
-    key_secret: str | None,
+    key_name: str,
+    key_secret: str,
     portfolio_uuid: str,
 ) -> dict[str, object]:
     path = f"{COINBASE_PORTFOLIOS_PATH}/{portfolio_uuid}"
-    headers = _build_auth_header(token, key_name, key_secret, path)
+    headers = _build_auth_header(key_name, key_secret, path)
     payload = await _fetch_coinbase_json(client, path, headers, {"currency": "USD"})
 
     breakdown = payload.get("breakdown", {})
@@ -377,13 +397,10 @@ async def _fetch_coinbase_portfolio_breakdown(
 
 async def _fetch_coinbase_portfolio_breakdowns(
     client: httpx.AsyncClient,
-    token: str | None,
-    key_name: str | None,
-    key_secret: str | None,
+    key_name: str,
+    key_secret: str,
 ) -> list[dict[str, object]]:
-    portfolios = await _fetch_coinbase_intx_portfolios(
-        client, token, key_name, key_secret
-    )
+    portfolios = await _fetch_coinbase_intx_portfolios(client, key_name, key_secret)
 
     breakdowns: list[dict[str, object]] = []
     for portfolio in portfolios:
@@ -392,7 +409,7 @@ async def _fetch_coinbase_portfolio_breakdowns(
             continue
         breakdowns.append(
             await _fetch_coinbase_portfolio_breakdown(
-                client, token, key_name, key_secret, portfolio_uuid
+                client, key_name, key_secret, portfolio_uuid
             )
         )
 
@@ -401,14 +418,11 @@ async def _fetch_coinbase_portfolio_breakdowns(
 
 async def _fetch_coinbase_default_portfolio_breakdowns(
     client: httpx.AsyncClient,
-    token: str | None,
-    key_name: str | None,
-    key_secret: str | None,
+    key_name: str,
+    key_secret: str,
 ) -> list[dict[str, object]]:
     try:
-        portfolios = await _fetch_coinbase_default_portfolios(
-            client, token, key_name, key_secret
-        )
+        portfolios = await _fetch_coinbase_default_portfolios(client, key_name, key_secret)
     except HTTPException as exc:
         if exc.status_code == 403:
             return []
@@ -422,7 +436,7 @@ async def _fetch_coinbase_default_portfolio_breakdowns(
         try:
             breakdowns.append(
                 await _fetch_coinbase_portfolio_breakdown(
-                    client, token, key_name, key_secret, portfolio_uuid
+                    client, key_name, key_secret, portfolio_uuid
                 )
             )
         except HTTPException as exc:
@@ -431,21 +445,6 @@ async def _fetch_coinbase_default_portfolio_breakdowns(
             raise
 
     return breakdowns
-
-
-def _primary_server_credentials() -> tuple[str | None, str | None]:
-    key_name = os.getenv(COINBASE_PRIMARY_API_KEY_NAME_ENV)
-    key_secret = os.getenv(COINBASE_PRIMARY_API_KEY_SECRET_ENV)
-    if bool(key_name) != bool(key_secret):
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Configure both "
-                f"{COINBASE_PRIMARY_API_KEY_NAME_ENV} and "
-                f"{COINBASE_PRIMARY_API_KEY_SECRET_ENV}"
-            ),
-        )
-    return key_name, key_secret
 
 
 def _portfolio_context(breakdown: dict[str, object]) -> tuple[str, str]:
@@ -747,6 +746,41 @@ def _render_coinbase_csv(
     return output.getvalue()
 
 
+@router.post(
+    "/capsule",
+    summary="Create an encrypted Coinbase access key",
+    description=(
+        "Validates a View-only Coinbase API key, encrypts it with AES-256-GCM, "
+        "and returns a stateless access key. Raw credentials are not persisted."
+    ),
+)
+async def create_coinbase_capsule(request: CoinbaseCapsuleRequest):
+    key_name = request.key_name.strip()
+    key_secret = _normalize_private_key(request.key_secret.get_secret_value())
+    if not key_name:
+        raise HTTPException(status_code=400, detail="Coinbase key_name is required")
+
+    async with queued_async_client(timeout=20.0) as client:
+        permissions = await _validate_view_only_credentials(
+            client,
+            key_name,
+            key_secret,
+        )
+
+    capsule = encrypt_coinbase_credentials(key_name, key_secret)
+    return Response(
+        content=json.dumps(
+            {
+                "capsule": capsule,
+                "permissions": permissions,
+            },
+            separators=(",", ":"),
+        ),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
 @router.get(
     "/balance",
     summary="Export Coinbase balances for Google Sheets",
@@ -754,23 +788,15 @@ def _render_coinbase_csv(
         "Returns a CSV table with Coinbase App account balances from /v2/accounts "
         "and Default/INTX portfolio balances and positions from "
         "/api/v3/brokerage/portfolios. "
-        "Pass either a ready Bearer token, key_name/key_secret from a downloaded "
-        "Coinbase API key, or configure Coinbase credentials in environment variables."
+        "Pass an encrypted access key generated by POST /coinbase/capsule."
     ),
     responses={200: {"content": {"text/csv": {}}}},
 )
 async def get_coinbase_balance(
-    token: str | None = Query(
-        None,
-        description="Optional ready Coinbase Bearer token.",
-    ),
-    key_name: str | None = Query(
-        None,
-        description="Coinbase API key name from the downloaded API key file.",
-    ),
-    key_secret: str | None = Query(
-        None,
-        description="Coinbase EC private key from the downloaded API key file.",
+    capsule: str = Query(
+        ...,
+        max_length=COINBASE_CAPSULE_MAX_LENGTH,
+        description="Encrypted Coinbase access key generated by this service.",
     ),
     include_zero: bool = Query(
         False,
@@ -781,14 +807,11 @@ async def get_coinbase_balance(
         description="Include Coinbase Default/INTX portfolio balances and positions.",
     ),
 ):
-    primary_key_name: str | None = None
-    primary_key_secret: str | None = None
-    if token is None and key_name is None and key_secret is None:
-        primary_key_name, primary_key_secret = _primary_server_credentials()
-
-    account_key_name = primary_key_name or key_name
-    account_key_secret = primary_key_secret or key_secret
-    account_headers = _build_auth_header(token, account_key_name, account_key_secret)
+    credentials = decrypt_coinbase_credentials(capsule)
+    account_headers = _build_auth_header(
+        credentials.key_name,
+        credentials.key_secret,
+    )
 
     async with queued_async_client(timeout=20.0) as client:
         accounts = await _fetch_coinbase_accounts(client, account_headers)
@@ -797,14 +820,15 @@ async def get_coinbase_balance(
             portfolio_breakdowns.extend(
                 await _fetch_coinbase_default_portfolio_breakdowns(
                     client,
-                    token,
-                    primary_key_name or key_name,
-                    primary_key_secret or key_secret,
+                    credentials.key_name,
+                    credentials.key_secret,
                 )
             )
             portfolio_breakdowns.extend(
                 await _fetch_coinbase_portfolio_breakdowns(
-                    client, token, key_name, key_secret
+                    client,
+                    credentials.key_name,
+                    credentials.key_secret,
                 )
             )
 

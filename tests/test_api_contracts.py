@@ -142,6 +142,19 @@ class PublishedApiContractTest(unittest.TestCase):
         }
         self.assertIn("/value", get_paths)
 
+    def test_coinbase_uses_capsules_instead_of_raw_credentials(self):
+        schema = app.openapi()
+        balance_parameters = schema["paths"]["/coinbase/balance"]["get"][
+            "parameters"
+        ]
+        parameter_names = {parameter["name"] for parameter in balance_parameters}
+
+        self.assertIn("capsule", parameter_names)
+        self.assertNotIn("token", parameter_names)
+        self.assertNotIn("key_name", parameter_names)
+        self.assertNotIn("key_secret", parameter_names)
+        self.assertIn("post", schema["paths"]["/coinbase/capsule"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,8 @@ spec:
           envFrom:
             - secretRef:
                 name: data-hunt-runtime
+            - secretRef:
+                name: data-hunt-coinbase-capsule
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -96,6 +98,34 @@ spec:
       http:
         paths:
           - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: data-hunt-sensitive-routes
+  namespace: data-hunt
+  annotations:
+    nginx.ingress.kubernetes.io/enable-access-log: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: hunt.data.lisacorp.com
+      http:
+        paths:
+          - path: /coinbase
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /value
             pathType: Prefix
             backend:
               service:

@@ -1,10 +1,13 @@
 import unittest
+import json
+import os
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
 from routers.coinbase import (
     COINBASE_ACCOUNTS_PATH,
+    COINBASE_KEY_PERMISSIONS_PATH,
     COINBASE_PORTFOLIOS_PATH,
     _build_auth_header,
     _build_coinbase_jwt,
@@ -13,29 +16,18 @@ from routers.coinbase import (
     _fetch_coinbase_portfolio_breakdowns,
     _next_page_params,
     _render_coinbase_csv,
+    _validate_view_only_credentials,
+    CoinbaseCapsuleRequest,
+    create_coinbase_capsule,
     get_coinbase_balance,
+)
+from coinbase_capsule import (
+    decrypt_coinbase_credentials,
+    encrypt_coinbase_credentials,
 )
 
 
 class CoinbaseAuthHeaderTest(unittest.TestCase):
-    def test_adds_bearer_prefix_to_ready_token(self):
-        self.assertEqual(
-            _build_auth_header("abc", None, None)["Authorization"],
-            "Bearer abc",
-        )
-
-    def test_keeps_existing_bearer_prefix(self):
-        self.assertEqual(
-            _build_auth_header("Bearer abc", None, None)["Authorization"],
-            "Bearer abc",
-        )
-
-    def test_rejects_empty_token(self):
-        with self.assertRaises(HTTPException) as context:
-            _build_auth_header(" ", None, None)
-
-        self.assertEqual(context.exception.status_code, 400)
-
     def test_builds_jwt_from_api_key(self):
         with patch("routers.coinbase.jwt.encode") as encode:
             encode.return_value = "signed-token"
@@ -52,11 +44,72 @@ class CoinbaseAuthHeaderTest(unittest.TestCase):
         self.assertEqual(payload["uri"], f"GET api.coinbase.com{COINBASE_ACCOUNTS_PATH}")
         self.assertEqual(encode.call_args.kwargs["algorithm"], "ES256")
 
-    def test_rejects_missing_credentials(self):
+    def test_builds_auth_header_from_api_key_only(self):
+        with patch("routers.coinbase._build_coinbase_jwt", return_value="signed"):
+            result = _build_auth_header("key-name", "private-key")
+
+        self.assertEqual(result["Authorization"], "Bearer signed")
+
+
+class CoinbaseCapsuleCryptoTest(unittest.TestCase):
+    def setUp(self):
+        self.environment = patch.dict(
+            os.environ,
+            {
+                "COINBASE_CAPSULE_ACTIVE_KEY_ID": "v2",
+                "COINBASE_CAPSULE_KEYS_JSON": json.dumps(
+                    {
+                        "v1": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA",
+                        "v2": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE",
+                    }
+                ),
+            },
+            clear=False,
+        )
+        self.environment.start()
+
+    def tearDown(self):
+        self.environment.stop()
+
+    def test_round_trip_has_no_expiry_and_uses_active_version(self):
+        capsule = encrypt_coinbase_credentials("key-name", "private-key")
+        credentials = decrypt_coinbase_credentials(capsule)
+
+        self.assertTrue(capsule.startswith("dhc1.v2."))
+        self.assertEqual(credentials.key_name, "key-name")
+        self.assertEqual(credentials.key_secret, "private-key")
+
+    def test_encryption_uses_random_nonce(self):
+        first = encrypt_coinbase_credentials("key-name", "private-key")
+        second = encrypt_coinbase_credentials("key-name", "private-key")
+
+        self.assertNotEqual(first, second)
+
+    def test_old_key_remains_decryptable_after_rotation(self):
+        with patch.dict(os.environ, {"COINBASE_CAPSULE_ACTIVE_KEY_ID": "v1"}):
+            old_capsule = encrypt_coinbase_credentials("key-name", "private-key")
+
+        self.assertEqual(
+            decrypt_coinbase_credentials(old_capsule).key_name,
+            "key-name",
+        )
+
+    def test_rejects_tampered_capsule_without_exposing_details(self):
+        capsule = encrypt_coinbase_credentials("key-name", "private-key")
+        tampered = f"{capsule[:-1]}{'A' if capsule[-1] != 'A' else 'B'}"
+
         with self.assertRaises(HTTPException) as context:
-            _build_auth_header(None, None, None)
+            decrypt_coinbase_credentials(tampered)
 
         self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.detail, "Invalid Coinbase access key")
+
+    def test_rejects_missing_server_keyring(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(HTTPException) as context:
+                encrypt_coinbase_credentials("key-name", "private-key")
+
+        self.assertEqual(context.exception.status_code, 503)
 
 
 class FakeCoinbaseResponse:
@@ -167,9 +220,13 @@ class CoinbasePortfolioBreakdownTest(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        result = await _fetch_coinbase_portfolio_breakdowns(
-            client, "Bearer token", None, None
-        )
+        with patch(
+            "routers.coinbase._build_auth_header",
+            return_value={"Authorization": "Bearer token"},
+        ):
+            result = await _fetch_coinbase_portfolio_breakdowns(
+                client, "key-name", "private-key"
+            )
 
         self.assertEqual(result[0]["portfolio"]["name"], "Perpetuals")
         self.assertEqual(client.requests[0]["url"].endswith(COINBASE_PORTFOLIOS_PATH), True)
@@ -207,9 +264,13 @@ class CoinbasePortfolioBreakdownTest(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        result = await _fetch_coinbase_default_portfolio_breakdowns(
-            client, "Bearer token", None, None
-        )
+        with patch(
+            "routers.coinbase._build_auth_header",
+            return_value={"Authorization": "Bearer token"},
+        ):
+            result = await _fetch_coinbase_default_portfolio_breakdowns(
+                client, "key-name", "private-key"
+            )
 
         self.assertEqual(result, [])
         self.assertEqual(client.requests[0]["params"], {"portfolio_type": "DEFAULT"})
@@ -392,6 +453,90 @@ class CoinbaseCsvTest(unittest.TestCase):
 
 
 class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
+    async def test_capsule_is_created_only_for_view_only_key(self):
+        permissions = {
+            "can_view": True,
+            "can_trade": False,
+            "can_transfer": False,
+            "can_receive": False,
+        }
+        with (
+            patch(
+                "routers.coinbase._validate_view_only_credentials",
+                new_callable=AsyncMock,
+                return_value=permissions,
+            ) as validate,
+            patch(
+                "routers.coinbase.encrypt_coinbase_credentials",
+                return_value="dhc1.v1.encrypted",
+            ) as encrypt,
+        ):
+            response = await create_coinbase_capsule(
+                CoinbaseCapsuleRequest(
+                    key_name="organizations/org/apiKeys/key",
+                    key_secret="-----BEGIN EC PRIVATE KEY-----\\nsecret\\n-----END EC PRIVATE KEY-----",
+                )
+            )
+
+        validate.assert_awaited_once()
+        encrypt.assert_called_once()
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertNotIn("private", response.body.decode().lower())
+        self.assertEqual(json.loads(response.body)["capsule"], "dhc1.v1.encrypted")
+
+    async def test_rejects_key_with_dangerous_permissions(self):
+        client = FakeCoinbaseClient(
+            [
+                FakeCoinbaseResponse(
+                    {
+                        "can_view": True,
+                        "can_trade": True,
+                        "can_transfer": False,
+                        "can_receive": False,
+                    }
+                )
+            ]
+        )
+
+        with patch("routers.coinbase._build_auth_header", return_value={}):
+            with self.assertRaises(HTTPException) as context:
+                await _validate_view_only_credentials(
+                    client,
+                    "key-name",
+                    "private-key",
+                )
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertIn("View-only", context.exception.detail)
+        self.assertTrue(
+            client.requests[0]["url"].endswith(COINBASE_KEY_PERMISSIONS_PATH)
+        )
+
+    async def test_rejects_key_without_view_permission(self):
+        client = FakeCoinbaseClient(
+            [
+                FakeCoinbaseResponse(
+                    {
+                        "can_view": False,
+                        "can_trade": False,
+                        "can_transfer": False,
+                        "can_receive": False,
+                    }
+                )
+            ]
+        )
+
+        with patch("routers.coinbase._build_auth_header", return_value={}):
+            with self.assertRaises(HTTPException) as context:
+                await _validate_view_only_credentials(
+                    client,
+                    "key-name",
+                    "private-key",
+                )
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertIn("View permission", context.exception.detail)
+
     async def test_returns_csv_response(self):
         accounts = [
             {
@@ -402,6 +547,7 @@ class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
         ]
 
         with (
+            patch("routers.coinbase.decrypt_coinbase_credentials") as decrypt,
             patch("routers.coinbase._build_auth_header") as build_auth,
             patch(
                 "routers.coinbase._fetch_coinbase_accounts", new_callable=AsyncMock
@@ -415,13 +561,20 @@ class CoinbaseEndpointTest(unittest.IsolatedAsyncioTestCase):
                 new_callable=AsyncMock,
             ) as fetch_default_portfolios,
         ):
+            decrypt.return_value.key_name = "key-name"
+            decrypt.return_value.key_secret = "private-key"
             build_auth.return_value = {"Authorization": "Bearer token"}
             fetch.return_value = accounts
             fetch_portfolios.return_value = []
             fetch_default_portfolios.return_value = []
-            response = await get_coinbase_balance("token")
+            response = await get_coinbase_balance(
+                capsule="dhc1.v1.encrypted",
+                include_zero=False,
+                include_portfolios=True,
+            )
 
-        build_auth.assert_called_once()
+        decrypt.assert_called_once_with("dhc1.v1.encrypted")
+        build_auth.assert_called_once_with("key-name", "private-key")
         fetch.assert_awaited_once()
         fetch_default_portfolios.assert_awaited_once()
         fetch_portfolios.assert_awaited_once()

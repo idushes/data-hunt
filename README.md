@@ -28,3 +28,18 @@ Provider defaults live in `outbound_queue.py`. Override individual limits with
 ```env
 OUTBOUND_API_LIMITS_JSON={"coinbase":{"requests":5,"period_seconds":1,"concurrency":2}}
 ```
+
+## Coinbase credential capsules
+
+Coinbase credentials are accepted only by `POST /coinbase/capsule`, validated
+as View-only, encrypted with AES-256-GCM, and returned without being persisted.
+Balance URLs accept the encrypted capsule instead of raw credentials. Capsules
+do not expire; they stop working when the Coinbase API key is revoked.
+
+Configure a versioned keyring and keep old keys available for decryption during
+rotation:
+
+```env
+COINBASE_CAPSULE_ACTIVE_KEY_ID=v2
+COINBASE_CAPSULE_KEYS_JSON={"v1":"<base64url-32-byte-key>","v2":"<base64url-32-byte-key>"}
+```
