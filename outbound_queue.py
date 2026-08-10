@@ -67,6 +67,7 @@ DEFAULT_POLICIES = (
     ProviderPolicy("euler", ("v3.euler.finance",), 3, 1, 2),
     ProviderPolicy("lido", ("eth-api.lido.fi",), 3, 1, 2),
     ProviderPolicy("jupiter_perps", ("perps-api.jup.ag",), 3, 1, 2),
+    ProviderPolicy("trongrid", ("api.trongrid.io",), 2, 1, 2),
 )
 FALLBACK_POLICY = ProviderPolicy("other", (), 2, 1, 2)
 

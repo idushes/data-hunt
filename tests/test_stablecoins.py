@@ -10,9 +10,11 @@ from routers.stablecoins import (
     ETHEREUM_TOKENS,
     ARBITRUM_TOKENS,
     BASE_TOKENS,
+    TRON_TOKENS,
     _fetch_evm_balances,
     _fetch_ethereum_balances,
     _fetch_stablecoin_rows,
+    _fetch_tron_balances,
     _format_balance,
     _render_csv,
     _sum_solana_token_accounts,
@@ -129,6 +131,33 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.exception.status_code, 400)
 
+    async def test_reads_tron_balances_in_one_request(self):
+        response = httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "trc20": [
+                            {TRON_TOKENS[0]["address"]: "12500000"},
+                            {TRON_TOKENS[1]["address"]: "3000000"},
+                        ]
+                    }
+                ]
+            },
+            request=httpx.Request("GET", "https://api.trongrid.io"),
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get.return_value = response
+
+        rows = await _fetch_tron_balances(
+            client, "TUoHaVjx7n5xz8LwPRDckgFrDWhMhuSuJM"
+        )
+
+        client.get.assert_awaited_once()
+        self.assertEqual(rows[0]["balance"], "12.5")
+        self.assertEqual(rows[1]["balance"], "3")
+        self.assertEqual(rows[0]["network"], "TRON")
+
     async def test_fetches_both_networks_and_keeps_zero_rows(self):
         ethereum_rows = [{"balance_id": "ethereum-usdc", "balance": "0"}]
         solana_rows = [{"balance_id": "solana-usdt", "balance": "0"}]
@@ -164,9 +193,11 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
             "routers.stablecoins._fetch_stablecoin_rows",
             AsyncMock(return_value=rows),
         ) as fetch:
-            response = await get_stablecoin_balances_csv(EVM_WALLET, None, 1)
+            response = await get_stablecoin_balances_csv(
+                EVM_WALLET, None, 1, None
+            )
 
-        fetch.assert_awaited_once_with(EVM_WALLET, None, 1)
+        fetch.assert_awaited_once_with(EVM_WALLET, None, 1, None)
         parsed = list(csv.DictReader(io.StringIO(response.body.decode())))
         self.assertEqual(parsed[0]["balance"], "10.5")
         self.assertEqual(response.headers["cache-control"], "public, max-age=60")

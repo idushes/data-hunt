@@ -107,6 +107,21 @@ SOLANA_TOKENS = (
         "decimals": 6,
     },
 )
+TRON_API_URL = "https://api.trongrid.io"
+TRON_TOKENS = (
+    {
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "address": "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
+        "decimals": 6,
+    },
+    {
+        "symbol": "USDC",
+        "name": "USD Coin (legacy)",
+        "address": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8",
+        "decimals": 6,
+    },
+)
 
 router = APIRouter(prefix="/stablecoins", tags=["stablecoins"])
 
@@ -125,6 +140,13 @@ def _normalize_solana_wallet(wallet: str) -> str:
     normalized = wallet.strip()
     if not _is_solana_address(normalized):
         raise HTTPException(status_code=400, detail="Invalid Solana wallet address")
+    return normalized
+
+
+def _normalize_tron_wallet(wallet: str) -> str:
+    normalized = wallet.strip()
+    if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}", normalized):
+        raise HTTPException(status_code=400, detail="Invalid TRON wallet address")
     return normalized
 
 
@@ -288,15 +310,64 @@ async def _fetch_solana_balances(
     )
 
 
+async def _fetch_tron_balances(
+    client: httpx.AsyncClient, wallet: str
+) -> list[dict[str, str]]:
+    try:
+        response = await client.get(f"{TRON_API_URL}/v1/accounts/{wallet}")
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="TronGrid request failed") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    account = data[0] if isinstance(data, list) and data else {}
+    balances = account.get("trc20", []) if isinstance(account, dict) else []
+    if not isinstance(balances, list):
+        raise HTTPException(status_code=502, detail="TronGrid returned invalid data")
+    raw_by_contract = {}
+    for item in balances:
+        if not isinstance(item, dict):
+            continue
+        for contract, raw in item.items():
+            try:
+                raw_by_contract[contract] = raw_by_contract.get(contract, 0) + int(raw)
+            except (TypeError, ValueError):
+                continue
+    return [
+        {
+            "balance_id": f"tron:mainnet:{wallet}:{token['symbol']}",
+            "wallet": wallet,
+            "network": "TRON",
+            "chain_id": "tron-mainnet",
+            "token_symbol": token["symbol"],
+            "token_name": token["name"],
+            "token_address": token["address"],
+            "balance": _format_balance(
+                raw_by_contract.get(token["address"], 0), token["decimals"]
+            ),
+            "decimals": str(token["decimals"]),
+        }
+        for token in TRON_TOKENS
+    ]
+
+
 async def _fetch_stablecoin_rows(
-    address: str | None, wallet: str | None, chain_id: int = 1
+    address: str | None,
+    wallet: str | None,
+    chain_id: int = 1,
+    tron_address: str | None = None,
 ) -> list[dict[str, str]]:
     normalized_address = _normalize_evm_address(address) if address else None
     normalized_wallet = _normalize_solana_wallet(wallet) if wallet else None
-    if normalized_address is None and normalized_wallet is None:
+    normalized_tron = _normalize_tron_wallet(tron_address) if tron_address else None
+    if (
+        normalized_address is None
+        and normalized_wallet is None
+        and normalized_tron is None
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Provide at least one Ethereum or Solana wallet address",
+            detail="Provide at least one EVM, Solana, or TRON wallet address",
         )
 
     async with queued_async_client(timeout=20.0, trust_env=False) as client:
@@ -307,6 +378,8 @@ async def _fetch_stablecoin_rows(
             )
         if normalized_wallet:
             tasks.append(_fetch_solana_balances(client, normalized_wallet))
+        if normalized_tron:
+            tasks.append(_fetch_tron_balances(client, normalized_tron))
         groups = await asyncio.gather(*tasks)
     return [row for group in groups for row in group]
 
@@ -324,7 +397,8 @@ def _render_csv(rows: list[dict[str, str]]) -> str:
     summary="Export EVM and Solana USDC/USDT balances",
     description=(
         "Returns stable USDC and USDT balance rows for an EVM address, "
-        "a Solana wallet, or both. Zero balances are included."
+        "a Solana wallet, a TRON wallet, or any combination. Zero balances "
+        "are included."
     ),
     responses={200: {"content": {"text/csv": {}}}},
 )
@@ -332,8 +406,9 @@ async def get_stablecoin_balances_csv(
     address: str | None = Query(None, description="Ethereum wallet address."),
     wallet: str | None = Query(None, description="Solana wallet address."),
     chain_id: int = Query(1, description="EVM chain ID: 1, 8453, or 42161."),
+    tron_address: str | None = Query(None, description="TRON wallet address."),
 ):
-    rows = await _fetch_stablecoin_rows(address, wallet, chain_id)
+    rows = await _fetch_stablecoin_rows(address, wallet, chain_id, tron_address)
     return Response(
         content=_render_csv(rows),
         media_type="text/csv",
