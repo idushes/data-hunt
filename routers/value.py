@@ -34,6 +34,7 @@ VALUE_SOURCES = {
     "compound": ValueSource("/compound/positions.csv", "position_id"),
     "euler": ValueSource("/euler/positions.csv", "position_id"),
     "lido": ValueSource("/lido/positions.csv", "position_id"),
+    "jupiter-jlp": ValueSource("/jupiter/jlp.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column"}
 

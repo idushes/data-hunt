@@ -58,6 +58,7 @@ from routers.morpho import router as morpho_router
 from routers.compound import router as compound_router
 from routers.euler import router as euler_router
 from routers.lido import router as lido_router
+from routers.jupiter import router as jupiter_router
 from routers.value import router as value_router
 from routers.feature_requests import router as feature_requests_router
 
@@ -115,6 +116,7 @@ app.include_router(morpho_router)
 app.include_router(compound_router)
 app.include_router(euler_router)
 app.include_router(lido_router)
+app.include_router(jupiter_router)
 app.include_router(value_router)
 app.include_router(feature_requests_router)
 
