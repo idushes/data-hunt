@@ -11,6 +11,7 @@ from routers.stakedao import (
     _build_rows,
     _fetch_balances,
     _fetch_stakedao_rows,
+    _fetch_v2_claimables,
     _fetch_v2_vault_states,
     _locker_targets,
     _render_csv,
@@ -27,6 +28,8 @@ VAULT = "0x2222222222222222222222222222222222222222"
 TOKEN = "0x3333333333333333333333333333333333333333"
 V2_VAULT = "0xe70fc8ffb97f6d539e5d50f657f4aae69f01b87d"
 V2_LP = "0x47ab5f9d8c9c7d002a92320f23a696d348c56a7f"
+ACCOUNTANT = "0x93b4b9bd266ffa8af68e39edfa8cfe2a62011ce0"
+CRV = "0xd533a949740bb3306d119cc777fa900ba034cd52"
 
 
 def _strategy_payload():
@@ -172,6 +175,19 @@ class StakeDaoCatalogTest(unittest.TestCase):
                 }
             },
             1,
+            {
+                V2_VAULT: {
+                    "reward_address": CRV,
+                    "raw_amount": 73_836_477_833_587_869_613,
+                }
+            },
+            {
+                CRV: {
+                    "symbol": "CRV",
+                    "decimals": 18,
+                    "price_usd": Decimal("0.24"),
+                }
+            },
         )
 
         self.assertEqual(balances, [20_752_878_510_179_439_248_607])
@@ -184,6 +200,13 @@ class StakeDaoCatalogTest(unittest.TestCase):
         self.assertEqual(rows[0]["amount"], "20752.878510179439248607")
         self.assertEqual(rows[0]["underlying_tvl_usd"], "533598.7132574318")
         self.assertTrue(Decimal(rows[0]["value_usd"]) > Decimal("20800"))
+        self.assertEqual(rows[0]["claimable_reward_symbol"], "CRV")
+        self.assertEqual(
+            rows[0]["claimable_reward_amount"], "73.836477833587869613"
+        )
+        self.assertEqual(
+            rows[0]["claimable_reward_value_usd"], "17.72075468006108870712"
+        )
 
 
 class StakeDaoRpcTest(unittest.IsolatedAsyncioTestCase):
@@ -239,6 +262,67 @@ class StakeDaoRpcTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(states), 1)
         self.assertEqual(states[0]["asset_address"], V2_LP)
         self.assertEqual(states[0]["raw_balance"], user_shares)
+
+    async def test_calculates_uncheckpointed_v2_claimable_rewards(self):
+        account_balance = 20 * 10**18
+        account_integral = 2 * 10**27
+        pending_rewards = 2 * 10**18
+        vault_integral = 5 * 10**27
+
+        def encoded_words(*values):
+            return "0x" + "".join(f"{value:064x}" for value in values)
+
+        accountant_response = httpx.Response(
+            200,
+            json=[
+                {
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "result": f"0x{ACCOUNTANT[2:].rjust(64, '0')}",
+                }
+            ],
+            request=httpx.Request("POST", "https://rpc.example"),
+        )
+        rewards_response = httpx.Response(
+            200,
+            json=[
+                {
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "result": f"0x{CRV[2:].rjust(64, '0')}",
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": encoded_words(
+                        account_balance, account_integral, pending_rewards
+                    ),
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": encoded_words(vault_integral, 0, 0, 0, 0, 0, 0),
+                },
+            ],
+            request=httpx.Request("POST", "https://rpc.example"),
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.side_effect = [accountant_response, rewards_response]
+
+        claimables = await _fetch_v2_claimables(
+            client,
+            "https://rpc.example",
+            WALLET,
+            [
+                {
+                    "position_contract": V2_VAULT,
+                }
+            ],
+        )
+
+        self.assertEqual(client.post.await_count, 2)
+        self.assertEqual(claimables[V2_VAULT]["reward_address"], CRV)
+        self.assertEqual(claimables[V2_VAULT]["raw_amount"], 62 * 10**18)
 
     async def test_rejects_unsupported_chain(self):
         with self.assertRaises(HTTPException) as context:

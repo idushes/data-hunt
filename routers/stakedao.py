@@ -30,6 +30,11 @@ BALANCE_OF_SELECTOR = "70a08231"
 ASSET_SELECTOR = "38d52e0f"
 TOTAL_ASSETS_SELECTOR = "01e1d114"
 TOTAL_SUPPLY_SELECTOR = "18160ddd"
+ACCOUNTANT_SELECTOR = "8b9d2940"
+REWARD_TOKEN_SELECTOR = "99248ea7"
+ACCOUNTS_SELECTOR = "ad74b775"
+VAULTS_SELECTOR = "a622ee7c"
+REWARD_SCALING_FACTOR = 10**27
 STAKEDAO_CSV_HEADER = [
     "wallet",
     "chain_id",
@@ -46,6 +51,11 @@ STAKEDAO_CSV_HEADER = [
     "amount",
     "price_usd",
     "value_usd",
+    "claimable_reward_symbol",
+    "claimable_reward_address",
+    "claimable_reward_amount",
+    "claimable_reward_price_usd",
+    "claimable_reward_value_usd",
     "apr_current_percent",
     "apr_projected_percent",
     "apr_min_percent",
@@ -279,6 +289,53 @@ def _rpc_result_by_id(payload: object) -> dict[int, str]:
     }
 
 
+def _uint_words(value: str) -> list[int]:
+    encoded = value.removeprefix("0x")
+    if not encoded or len(encoded) % 64 != 0:
+        return []
+    try:
+        return [
+            int(encoded[offset : offset + 64], 16)
+            for offset in range(0, len(encoded), 64)
+        ]
+    except ValueError:
+        return []
+
+
+def _reward_tokens_by_address(
+    strategy_payloads: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    tokens: dict[str, dict[str, Any]] = {}
+    for payload in strategy_payloads:
+        deployed = payload.get("deployed")
+        if not isinstance(deployed, list):
+            continue
+        for value in deployed:
+            rewards = _dict(value).get("rewards")
+            if not isinstance(rewards, list):
+                continue
+            for reward_value in rewards:
+                reward = _dict(reward_value)
+                token = _dict(reward.get("token"))
+                address = _text(token.get("address")).lower()
+                if not re.fullmatch(r"0x[0-9a-f]{40}", address):
+                    continue
+                current = tokens.setdefault(address, {})
+                current.update(
+                    {
+                        "symbol": _text(token.get("symbol"))
+                        or _text(current.get("symbol")),
+                        "decimals": int(
+                            token.get("decimals") or current.get("decimals") or 18
+                        ),
+                        "price_usd": reward.get("price")
+                        if reward.get("price") is not None
+                        else current.get("price_usd"),
+                    }
+                )
+    return tokens
+
+
 async def _fetch_v2_vault_states(
     client: httpx.AsyncClient,
     rpc_url: str,
@@ -350,6 +407,132 @@ async def _fetch_v2_vault_states(
     return states
 
 
+async def _fetch_v2_claimables(
+    client: httpx.AsyncClient,
+    rpc_url: str,
+    wallet: str,
+    states: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    state_by_vault = {
+        _text(state.get("position_contract")): state for state in states
+    }
+    valid_vaults = [
+        vault
+        for vault in state_by_vault
+        if re.fullmatch(r"0x[0-9a-f]{40}", vault)
+    ]
+    accountant_payload = [
+        {
+            "jsonrpc": "2.0",
+            "id": index,
+            "method": "eth_call",
+            "params": [{"to": vault, "data": f"0x{ACCOUNTANT_SELECTOR}"}, "latest"],
+        }
+        for index, vault in enumerate(valid_vaults)
+    ]
+    if not accountant_payload:
+        return {}
+
+    try:
+        response = await client.post(rpc_url, json=accountant_payload)
+        response.raise_for_status()
+        accountant_results = _rpc_result_by_id(response.json())
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502, detail="Stake DAO V2 accountant RPC request failed"
+        ) from exc
+
+    accountant_by_vault = {}
+    for index, vault in enumerate(valid_vaults):
+        result = accountant_results.get(index, "")
+        accountant = f"0x{result[-40:]}".lower()
+        if (
+            re.fullmatch(r"0x[0-9a-f]{40}", accountant)
+            and int(accountant, 16) != 0
+        ):
+            accountant_by_vault[vault] = accountant
+
+    accountants = sorted(set(accountant_by_vault.values()))
+    calls = []
+    reward_call_ids: dict[str, int] = {}
+    state_call_ids: dict[str, tuple[int, int]] = {}
+
+    for accountant in accountants:
+        reward_call_ids[accountant] = len(calls)
+        calls.append((accountant, REWARD_TOKEN_SELECTOR))
+
+    encoded_wallet = wallet[2:].rjust(64, "0")
+    for state in states:
+        vault = _text(state.get("position_contract"))
+        accountant = accountant_by_vault.get(vault)
+        if accountant is None:
+            continue
+        encoded_vault = vault[2:].rjust(64, "0")
+        account_call_id = len(calls)
+        calls.append(
+            (
+                accountant,
+                f"{ACCOUNTS_SELECTOR}{encoded_vault}{encoded_wallet}",
+            )
+        )
+        vault_call_id = len(calls)
+        calls.append((accountant, f"{VAULTS_SELECTOR}{encoded_vault}"))
+        state_call_ids[vault] = (account_call_id, vault_call_id)
+
+    if not calls:
+        return {}
+
+    payload = [
+        {
+            "jsonrpc": "2.0",
+            "id": index,
+            "method": "eth_call",
+            "params": [{"to": address, "data": f"0x{data}"}, "latest"],
+        }
+        for index, (address, data) in enumerate(calls)
+    ]
+    try:
+        response = await client.post(rpc_url, json=payload)
+        response.raise_for_status()
+        results = _rpc_result_by_id(response.json())
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502, detail="Stake DAO V2 rewards RPC request failed"
+        ) from exc
+
+    reward_by_accountant = {}
+    for accountant, call_id in reward_call_ids.items():
+        result = results.get(call_id, "")
+        reward_address = f"0x{result[-40:]}".lower()
+        if (
+            re.fullmatch(r"0x[0-9a-f]{40}", reward_address)
+            and int(reward_address, 16) != 0
+        ):
+            reward_by_accountant[accountant] = reward_address
+
+    claimables = {}
+    for vault, (account_call_id, vault_call_id) in state_call_ids.items():
+        account_words = _uint_words(results.get(account_call_id, ""))
+        vault_words = _uint_words(results.get(vault_call_id, ""))
+        reward_address = reward_by_accountant.get(accountant_by_vault[vault])
+        if len(account_words) < 3 or not vault_words or reward_address is None:
+            continue
+        account_balance, account_integral, pending_rewards = account_words[:3]
+        vault_integral = vault_words[0]
+        integral_rewards = (
+            (vault_integral - account_integral)
+            * account_balance
+            // REWARD_SCALING_FACTOR
+            if vault_integral > account_integral
+            else 0
+        )
+        claimables[vault] = {
+            "reward_address": reward_address,
+            "raw_amount": pending_rewards + integral_rewards,
+        }
+    return claimables
+
+
 def _curve_pools_by_lp(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     pools = _dict(payload.get("data")).get("poolData")
     if not isinstance(pools, list):
@@ -369,6 +552,8 @@ def _v2_vault_targets(
     states: list[dict[str, Any]],
     curve_payload: dict[str, Any],
     chain_id: int,
+    claimables: dict[str, dict[str, Any]] | None = None,
+    reward_tokens: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     pools = _curve_pools_by_lp(curve_payload)
     targets = []
@@ -403,29 +588,50 @@ def _v2_vault_targets(
             * price
         )
         contract = _text(state.get("position_contract"))
-        targets.append(
-            {
-                "product": "strategy",
-                "protocol": "curve",
-                "strategy_key": _text(pool.get("id")),
-                "name": _text(pool.get("name")) or _text(state.get("name")),
-                "position_type": "vault_v2",
-                "position_contract": contract,
-                "asset_symbol": _text(pool.get("symbol")),
-                "asset_address": asset_address,
-                "decimals": decimals,
-                "price_usd": price,
-                "apr_current_percent": "",
-                "apr_projected_percent": max(apy_values, default=None),
-                "apr_min_percent": min(apy_values, default=None),
-                "apr_max_percent": max(apy_values, default=None),
-                "tvl_usd": vault_tvl,
-                "underlying_tvl_usd": underlying_tvl,
-                "source_url": (
-                    f"{STAKEDAO_APP_URL}?protocol=curve&vault={chain_id}-{contract}"
-                ),
-            }
-        )
+        target = {
+            "product": "strategy",
+            "protocol": "curve",
+            "strategy_key": _text(pool.get("id")),
+            "name": _text(pool.get("name")) or _text(state.get("name")),
+            "position_type": "vault_v2",
+            "position_contract": contract,
+            "asset_symbol": _text(pool.get("symbol")),
+            "asset_address": asset_address,
+            "decimals": decimals,
+            "price_usd": price,
+            "apr_current_percent": "",
+            "apr_projected_percent": max(apy_values, default=None),
+            "apr_min_percent": min(apy_values, default=None),
+            "apr_max_percent": max(apy_values, default=None),
+            "tvl_usd": vault_tvl,
+            "underlying_tvl_usd": underlying_tvl,
+            "source_url": (
+                f"{STAKEDAO_APP_URL}?protocol=curve&vault={chain_id}-{contract}"
+            ),
+        }
+        claimable = (claimables or {}).get(contract)
+        if claimable is not None:
+            reward_address = _text(claimable.get("reward_address"))
+            reward = (reward_tokens or {}).get(reward_address, {})
+            reward_decimals = int(reward.get("decimals") or 18)
+            reward_amount = Decimal(int(claimable.get("raw_amount") or 0)) / (
+                Decimal(10) ** reward_decimals
+            )
+            reward_price = _decimal(reward.get("price_usd"))
+            target.update(
+                {
+                    "claimable_reward_symbol": _text(reward.get("symbol")),
+                    "claimable_reward_address": reward_address,
+                    "claimable_reward_amount": reward_amount,
+                    "claimable_reward_price_usd": reward_price,
+                    "claimable_reward_value_usd": (
+                        reward_amount * reward_price
+                        if reward_price is not None
+                        else None
+                    ),
+                }
+            )
+        targets.append(target)
         balances.append(int(state["raw_balance"]))
     return targets, balances
 
@@ -520,6 +726,21 @@ def _build_rows(
                 "amount": _format_decimal(amount),
                 "price_usd": _format_decimal(price),
                 "value_usd": _format_decimal(value_usd),
+                "claimable_reward_symbol": _text(
+                    target.get("claimable_reward_symbol")
+                ),
+                "claimable_reward_address": _text(
+                    target.get("claimable_reward_address")
+                ),
+                "claimable_reward_amount": _format_decimal(
+                    _decimal(target.get("claimable_reward_amount"))
+                ),
+                "claimable_reward_price_usd": _format_decimal(
+                    _decimal(target.get("claimable_reward_price_usd"))
+                ),
+                "claimable_reward_value_usd": _format_decimal(
+                    _decimal(target.get("claimable_reward_value_usd"))
+                ),
                 "apr_current_percent": _format_decimal(
                     _decimal(target.get("apr_current_percent"))
                 ),
@@ -590,7 +811,10 @@ async def _fetch_stakedao_rows(
             ),
         )
         if v2_states:
-            curve_payload = await _fetch_json(client, CURVE_POOLS_API_URL)
+            curve_payload, v2_claimables = await asyncio.gather(
+                _fetch_json(client, CURVE_POOLS_API_URL),
+                _fetch_v2_claimables(client, rpc_url, wallet, v2_states),
+            )
             existing_contracts = {
                 _text(target.get("position_contract")) for target in targets
             }
@@ -600,7 +824,11 @@ async def _fetch_stakedao_rows(
                 if _text(state.get("position_contract")) not in existing_contracts
             ]
             v2_targets, v2_balances = _v2_vault_targets(
-                v2_states, curve_payload, chain_id
+                v2_states,
+                curve_payload,
+                chain_id,
+                v2_claimables,
+                _reward_tokens_by_address(list(strategy_payloads)),
             )
             targets.extend(v2_targets)
             balances.extend(v2_balances)
