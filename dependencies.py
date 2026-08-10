@@ -71,3 +71,49 @@ def get_current_account(
 
 def get_current_token_id(payload: dict = Depends(get_current_token_payload)) -> str:
     return payload.get("jti")
+
+
+def get_optional_current_account(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    if credentials is None:
+        return None
+
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+        )
+    except jwt.PyJWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    account_id = payload.get("sub")
+    token_id = payload.get("jti")
+    if not isinstance(account_id, str) or not isinstance(token_id, str):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    db_token = db.query(AccountToken).filter(
+        AccountToken.id == token_id,
+        AccountToken.account_id == account_id,
+        AccountToken.is_active.is_(True),
+    ).first()
+    if db_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is invalid or revoked",
+        )
+
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return account

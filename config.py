@@ -23,3 +23,8 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24)
 )
+FEATURE_REQUEST_ADMIN_ADDRESSES = frozenset(
+    address.strip().lower()
+    for address in os.environ.get("FEATURE_REQUEST_ADMIN_ADDRESSES", "").split(",")
+    if address.strip()
+)
