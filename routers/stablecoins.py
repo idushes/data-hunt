@@ -18,6 +18,7 @@ from routers.solana import SOLANA_RPC_ENDPOINT, _is_solana_address, _solana_rpc_
 STABLECOINS_CACHE_TTL_SECONDS = 60
 ETHEREUM_RPC_ENDPOINT = "https://ethereum-rpc.publicnode.com"
 ARBITRUM_RPC_ENDPOINT = "https://arbitrum-one-rpc.publicnode.com"
+BASE_RPC_ENDPOINT = "https://base-rpc.publicnode.com"
 BALANCE_OF_SELECTOR = "70a08231"
 STABLECOIN_CSV_HEADER = [
     "balance_id",
@@ -58,6 +59,20 @@ ARBITRUM_TOKENS = (
         "decimals": 6,
     },
 )
+BASE_TOKENS = (
+    {
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "decimals": 6,
+    },
+    {
+        "symbol": "USDT",
+        "name": "Bridged Tether USD",
+        "address": "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2",
+        "decimals": 6,
+    },
+)
 EVM_CHAINS = {
     1: {
         "name": "Ethereum",
@@ -70,6 +85,12 @@ EVM_CHAINS = {
         "rpc_env": "STABLECOINS_ARBITRUM_RPC_URL",
         "rpc_url": ARBITRUM_RPC_ENDPOINT,
         "tokens": ARBITRUM_TOKENS,
+    },
+    8453: {
+        "name": "Base",
+        "rpc_env": "STABLECOINS_BASE_RPC_URL",
+        "rpc_url": BASE_RPC_ENDPOINT,
+        "tokens": BASE_TOKENS,
     },
 }
 SOLANA_TOKENS = (
@@ -310,7 +331,7 @@ def _render_csv(rows: list[dict[str, str]]) -> str:
 async def get_stablecoin_balances_csv(
     address: str | None = Query(None, description="Ethereum wallet address."),
     wallet: str | None = Query(None, description="Solana wallet address."),
-    chain_id: int = Query(1, description="EVM chain ID: 1 or 42161."),
+    chain_id: int = Query(1, description="EVM chain ID: 1, 8453, or 42161."),
 ):
     rows = await _fetch_stablecoin_rows(address, wallet, chain_id)
     return Response(

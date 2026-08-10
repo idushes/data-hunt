@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from routers.stablecoins import (
     ETHEREUM_TOKENS,
     ARBITRUM_TOKENS,
+    BASE_TOKENS,
     _fetch_evm_balances,
     _fetch_ethereum_balances,
     _fetch_stablecoin_rows,
@@ -102,6 +103,25 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             rows[0]["balance_id"], f"evm:42161:{EVM_WALLET}:USDC"
         )
+
+    async def test_reads_base_balances(self):
+        response = httpx.Response(
+            200,
+            json=[
+                {"jsonrpc": "2.0", "id": 0, "result": hex(2_000_000)},
+                {"jsonrpc": "2.0", "id": 1, "result": hex(3_000_000)},
+            ],
+            request=httpx.Request("POST", "https://rpc.example"),
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = response
+
+        rows = await _fetch_evm_balances(client, EVM_WALLET, 8453)
+
+        self.assertEqual(len(rows), len(BASE_TOKENS))
+        self.assertEqual(rows[0]["network"], "Base")
+        self.assertEqual(rows[0]["balance"], "2")
+        self.assertEqual(rows[1]["balance"], "3")
 
     async def test_requires_at_least_one_wallet(self):
         with self.assertRaises(HTTPException) as context:
