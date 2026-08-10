@@ -17,6 +17,7 @@ from routers.solana import SOLANA_RPC_ENDPOINT, _is_solana_address, _solana_rpc_
 
 STABLECOINS_CACHE_TTL_SECONDS = 60
 ETHEREUM_RPC_ENDPOINT = "https://ethereum-rpc.publicnode.com"
+ARBITRUM_RPC_ENDPOINT = "https://arbitrum-one-rpc.publicnode.com"
 BALANCE_OF_SELECTOR = "70a08231"
 STABLECOIN_CSV_HEADER = [
     "balance_id",
@@ -43,6 +44,34 @@ ETHEREUM_TOKENS = (
         "decimals": 6,
     },
 )
+ARBITRUM_TOKENS = (
+    {
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "decimals": 6,
+    },
+    {
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "address": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+        "decimals": 6,
+    },
+)
+EVM_CHAINS = {
+    1: {
+        "name": "Ethereum",
+        "rpc_env": "STABLECOINS_ETHEREUM_RPC_URL",
+        "rpc_url": ETHEREUM_RPC_ENDPOINT,
+        "tokens": ETHEREUM_TOKENS,
+    },
+    42161: {
+        "name": "Arbitrum",
+        "rpc_env": "STABLECOINS_ARBITRUM_RPC_URL",
+        "rpc_url": ARBITRUM_RPC_ENDPOINT,
+        "tokens": ARBITRUM_TOKENS,
+    },
+}
 SOLANA_TOKENS = (
     {
         "symbol": "USDC",
@@ -84,10 +113,18 @@ def _format_balance(raw_amount: int, decimals: int) -> str:
     return format(Decimal(raw_amount) / (Decimal(10) ** decimals), "f")
 
 
-async def _fetch_ethereum_balances(
-    client: httpx.AsyncClient, wallet: str
+async def _fetch_evm_balances(
+    client: httpx.AsyncClient, wallet: str, chain_id: int
 ) -> list[dict[str, str]]:
-    rpc_url = os.getenv("STABLECOINS_ETHEREUM_RPC_URL") or ETHEREUM_RPC_ENDPOINT
+    chain = EVM_CHAINS.get(chain_id)
+    if chain is None:
+        supported = ", ".join(str(value) for value in sorted(EVM_CHAINS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported stablecoin chain. Supported chain IDs: {supported}",
+        )
+    rpc_url = os.getenv(chain["rpc_env"]) or chain["rpc_url"]
+    tokens = chain["tokens"]
     encoded_wallet = wallet[2:].lower().rjust(64, "0")
     payload = [
         {
@@ -102,7 +139,7 @@ async def _fetch_ethereum_balances(
                 "latest",
             ],
         }
-        for index, token in enumerate(ETHEREUM_TOKENS)
+        for index, token in enumerate(tokens)
     ]
     try:
         response = await client.post(rpc_url, json=payload)
@@ -110,12 +147,13 @@ async def _fetch_ethereum_balances(
         items = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(
-            status_code=502, detail="Ethereum RPC request failed"
+            status_code=502, detail=f"{chain['name']} RPC request failed"
         ) from exc
 
     if not isinstance(items, list):
         raise HTTPException(
-            status_code=502, detail="Ethereum RPC returned an invalid batch response"
+            status_code=502,
+            detail=f"{chain['name']} RPC returned an invalid batch response",
         )
     by_id = {
         item.get("id"): item
@@ -124,7 +162,7 @@ async def _fetch_ethereum_balances(
     }
 
     rows = []
-    for index, token in enumerate(ETHEREUM_TOKENS):
+    for index, token in enumerate(tokens):
         item = by_id.get(index, {})
         result = item.get("result") if isinstance(item, dict) else None
         try:
@@ -134,14 +172,14 @@ async def _fetch_ethereum_balances(
         if raw_amount is None:
             raise HTTPException(
                 status_code=502,
-                detail=f"Failed to read Ethereum {token['symbol']} balance",
+                detail=f"Failed to read {chain['name']} {token['symbol']} balance",
             )
         rows.append(
             {
-                "balance_id": f"ethereum:1:{wallet}:{token['symbol']}",
+                "balance_id": f"evm:{chain_id}:{wallet}:{token['symbol']}",
                 "wallet": wallet,
-                "network": "Ethereum",
-                "chain_id": "1",
+                "network": chain["name"],
+                "chain_id": str(chain_id),
                 "token_symbol": token["symbol"],
                 "token_name": token["name"],
                 "token_address": token["address"],
@@ -150,6 +188,12 @@ async def _fetch_ethereum_balances(
             }
         )
     return rows
+
+
+async def _fetch_ethereum_balances(
+    client: httpx.AsyncClient, wallet: str
+) -> list[dict[str, str]]:
+    return await _fetch_evm_balances(client, wallet, 1)
 
 
 def _sum_solana_token_accounts(result: Any, expected_decimals: int) -> int:
@@ -224,7 +268,7 @@ async def _fetch_solana_balances(
 
 
 async def _fetch_stablecoin_rows(
-    address: str | None, wallet: str | None
+    address: str | None, wallet: str | None, chain_id: int = 1
 ) -> list[dict[str, str]]:
     normalized_address = _normalize_evm_address(address) if address else None
     normalized_wallet = _normalize_solana_wallet(wallet) if wallet else None
@@ -237,7 +281,9 @@ async def _fetch_stablecoin_rows(
     async with queued_async_client(timeout=20.0, trust_env=False) as client:
         tasks = []
         if normalized_address:
-            tasks.append(_fetch_ethereum_balances(client, normalized_address))
+            tasks.append(
+                _fetch_evm_balances(client, normalized_address, chain_id)
+            )
         if normalized_wallet:
             tasks.append(_fetch_solana_balances(client, normalized_wallet))
         groups = await asyncio.gather(*tasks)
@@ -254,9 +300,9 @@ def _render_csv(rows: list[dict[str, str]]) -> str:
 
 @router.get(
     "/balances.csv",
-    summary="Export Ethereum and Solana USDC/USDT balances",
+    summary="Export EVM and Solana USDC/USDT balances",
     description=(
-        "Returns stable USDC and USDT balance rows for an Ethereum address, "
+        "Returns stable USDC and USDT balance rows for an EVM address, "
         "a Solana wallet, or both. Zero balances are included."
     ),
     responses={200: {"content": {"text/csv": {}}}},
@@ -264,8 +310,9 @@ def _render_csv(rows: list[dict[str, str]]) -> str:
 async def get_stablecoin_balances_csv(
     address: str | None = Query(None, description="Ethereum wallet address."),
     wallet: str | None = Query(None, description="Solana wallet address."),
+    chain_id: int = Query(1, description="EVM chain ID: 1 or 42161."),
 ):
-    rows = await _fetch_stablecoin_rows(address, wallet)
+    rows = await _fetch_stablecoin_rows(address, wallet, chain_id)
     return Response(
         content=_render_csv(rows),
         media_type="text/csv",
