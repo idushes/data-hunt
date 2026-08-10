@@ -59,6 +59,7 @@ DEFAULT_POLICIES = (
     ProviderPolicy("stakedao", ("api.stakedao.org",), 3, 1, 2),
     ProviderPolicy("blockscout", ("eth.blockscout.com",), 3, 1, 2),
     ProviderPolicy("curve", ("api.curve.finance",), 2, 1, 2),
+    ProviderPolicy("morpho", ("api.morpho.org",), 3, 1, 2),
 )
 FALLBACK_POLICY = ProviderPolicy("other", (), 2, 1, 2)
 
