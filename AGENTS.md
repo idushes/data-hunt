@@ -47,6 +47,14 @@ Guidance for coding agents working in this repository.
 - Keep external-service calls async where the surrounding code is async, and preserve existing error handling patterns with `HTTPException` for API failures.
 - Do not commit secrets, API keys, tokens, private keys, wallet data, or local `.env` files.
 
+## Landing Page Communication
+
+- When adding or materially changing user-facing functionality, also update the landing page in the sibling `data-hunt-web` repository within the same task.
+- This includes new data sources, integrations, supported platforms or blockchains, workflows, and capabilities that users can select or use.
+- Present the change concisely and visually, emphasizing the user benefit instead of implementation details. Keep the landing page easy to understand with minimal reading.
+- Only advertise functionality that is actually implemented and verified. Internal refactors, maintenance, and fixes that do not change visible capabilities do not require a landing-page update.
+- Commit and verify the backend and landing-page changes in their respective repositories.
+
 ## Verification
 
 - Run focused unit tests for touched behavior.
