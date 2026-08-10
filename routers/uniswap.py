@@ -13,6 +13,7 @@ from web3 import Web3
 
 UNISWAP_CACHE_TTL_SECONDS = 60
 UNISWAP_MAX_POSITIONS = 200
+MAX_UINT128 = (2**128) - 1
 UNISWAP_V3_POSITION_MANAGER = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
 UNISWAP_V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
 ETHEREUM_USD_STABLECOINS = {
@@ -71,6 +72,9 @@ UNISWAP_CSV_HEADER = [
     "token1_address",
     "token1_amount",
     "token1_owed",
+    "token0_fees_claimable",
+    "token1_fees_claimable",
+    "fees_value_usd",
     "price_token1_per_token0",
     "price_lower",
     "price_upper",
@@ -110,6 +114,27 @@ POSITION_MANAGER_ABI = [
             {"name": "tokensOwed1", "type": "uint128"},
         ],
         "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {
+                "name": "params",
+                "type": "tuple",
+                "components": [
+                    {"name": "tokenId", "type": "uint256"},
+                    {"name": "recipient", "type": "address"},
+                    {"name": "amount0Max", "type": "uint128"},
+                    {"name": "amount1Max", "type": "uint128"},
+                ],
+            }
+        ],
+        "name": "collect",
+        "outputs": [
+            {"name": "amount0", "type": "uint256"},
+            {"name": "amount1", "type": "uint256"},
+        ],
+        "stateMutability": "payable",
         "type": "function",
     },
 ]
@@ -276,25 +301,27 @@ async def _rpc_batch_calls(
     client: httpx.AsyncClient,
     rpc_url: str,
     calls: list[tuple[str, Any]],
+    from_address: str | None = None,
 ) -> list[tuple[Any, ...] | None]:
     if not calls:
         return []
 
-    payload = [
-        {
-            "jsonrpc": "2.0",
-            "id": index,
-            "method": "eth_call",
-            "params": [
-                {
-                    "to": Web3.to_checksum_address(address),
-                    "data": function._encode_transaction_data(),
-                },
-                "latest",
-            ],
+    payload = []
+    for index, (address, function) in enumerate(calls):
+        transaction = {
+            "to": Web3.to_checksum_address(address),
+            "data": function._encode_transaction_data(),
         }
-        for index, (address, function) in enumerate(calls)
-    ]
+        if from_address is not None:
+            transaction["from"] = Web3.to_checksum_address(from_address)
+        payload.append(
+            {
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "eth_call",
+                "params": [transaction, "latest"],
+            }
+        )
     try:
         response = await client.post(rpc_url, json=payload)
         response.raise_for_status()
@@ -429,6 +456,31 @@ async def _fetch_uniswap_rows(
                 continue
             positions.append((int(token_id), position))
 
+        collect_results = await _rpc_batch_calls(
+            client,
+            rpc_url,
+            [
+                (
+                    manager_address,
+                    manager.functions.collect(
+                        (token_id, checksum_wallet, MAX_UINT128, MAX_UINT128)
+                    ),
+                )
+                for token_id, _ in positions
+            ],
+            from_address=checksum_wallet,
+        )
+        claimable_fees_raw = {
+            token_id: (
+                (int(result[0]), int(result[1]))
+                if result is not None
+                else (int(position[10]), int(position[11]))
+            )
+            for (token_id, position), result in zip(
+                positions, collect_results, strict=False
+            )
+        }
+
         token_addresses = sorted(
             {
                 str(position[index]).lower()
@@ -552,6 +604,19 @@ async def _fetch_uniswap_rows(
             price,
             chain.get("usd_stablecoins"),
         )
+        fees0_raw, fees1_raw = claimable_fees_raw.get(
+            token_id, (int(position[10]), int(position[11]))
+        )
+        fees0 = Decimal(fees0_raw) / (Decimal(10) ** token0["decimals"])
+        fees1 = Decimal(fees1_raw) / (Decimal(10) ** token1["decimals"])
+        fees_value_usd = _usd_value(
+            token0_address,
+            token1_address,
+            fees0,
+            fees1,
+            price,
+            chain.get("usd_stablecoins"),
+        )
         rows.append(
             {
                 "wallet": wallet,
@@ -582,6 +647,13 @@ async def _fetch_uniswap_rows(
                 "token1_amount": _format_decimal(amount1),
                 "token1_owed": _format_decimal(
                     Decimal(position[11]) / (Decimal(10) ** token1["decimals"])
+                ),
+                "token0_fees_claimable": _format_decimal(fees0),
+                "token1_fees_claimable": _format_decimal(fees1),
+                "fees_value_usd": (
+                    _format_decimal(fees_value_usd, 8)
+                    if fees_value_usd is not None
+                    else ""
                 ),
                 "price_token1_per_token0": _format_decimal(price),
                 "price_lower": _format_decimal(

@@ -4,10 +4,14 @@ import unittest
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi import HTTPException
+from web3 import Web3
 
 from routers.uniswap import (
+    MAX_UINT128,
     MONAD_USD_STABLECOINS,
+    POSITION_MANAGER_ABI,
     Q96,
     UNISWAP_CHAINS,
     _fetch_uniswap_rows,
@@ -15,6 +19,7 @@ from routers.uniswap import (
     _normalize_wallet,
     _position_amounts,
     _render_csv,
+    _rpc_batch_calls,
     _usd_value,
     get_uniswap_positions_csv,
 )
@@ -123,6 +128,54 @@ class UniswapValidationTest(unittest.IsolatedAsyncioTestCase):
             _normalize_wallet("not-an-address")
 
         self.assertEqual(context.exception.status_code, 400)
+
+    async def test_collect_simulation_uses_wallet_as_sender(self):
+        manager_address = UNISWAP_CHAINS[143]["position_manager"]
+        manager = Web3().eth.contract(
+            address=Web3.to_checksum_address(manager_address),
+            abi=POSITION_MANAGER_ABI,
+        )
+        encoded_result = Web3().codec.encode(
+            ["uint256", "uint256"], [4_165 * 10**18, 89 * 10**6]
+        )
+        response = httpx.Response(
+            200,
+            json=[
+                {
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "result": f"0x{encoded_result.hex()}",
+                }
+            ],
+            request=httpx.Request("POST", "https://rpc.example"),
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = response
+
+        result = await _rpc_batch_calls(
+            client,
+            "https://rpc.example",
+            [
+                (
+                    manager_address,
+                    manager.functions.collect(
+                        (
+                            21699,
+                            Web3.to_checksum_address(WALLET),
+                            MAX_UINT128,
+                            MAX_UINT128,
+                        )
+                    ),
+                )
+            ],
+            from_address=WALLET,
+        )
+
+        payload = client.post.await_args.kwargs["json"]
+        self.assertEqual(
+            payload[0]["params"][0]["from"], Web3.to_checksum_address(WALLET)
+        )
+        self.assertEqual(result[0], (4_165 * 10**18, 89 * 10**6))
 
     async def test_rejects_unsupported_chain(self):
         with self.assertRaises(HTTPException) as context:
