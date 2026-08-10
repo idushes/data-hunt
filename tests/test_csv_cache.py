@@ -78,7 +78,7 @@ class FakeRedisPipeline:
 
 def _build_app() -> tuple[FastAPI, dict[str, int]]:
     app = FastAPI()
-    calls = {"csv": 0, "text": 0}
+    calls = {"csv": 0, "text": 0, "failure": 0}
     app.add_middleware(CSVMemoryCacheMiddleware, ttl_seconds=60, max_entries=16)
 
     @app.get("/report.csv")
@@ -96,6 +96,15 @@ def _build_app() -> tuple[FastAPI, dict[str, int]]:
     async def number():
         calls["text"] += 1
         return PlainTextResponse(str(calls["text"]))
+
+    @app.get("/failure.csv")
+    async def failure():
+        calls["failure"] += 1
+        return Response(
+            content="error\nupstream unavailable\n",
+            status_code=502,
+            media_type="text/csv",
+        )
 
     return app, calls
 
@@ -143,6 +152,30 @@ class CSVMemoryCacheMiddlewareTest(unittest.TestCase):
         self.assertEqual(first.headers["x-csv-cache"], "MISS")
         self.assertEqual(second.headers["x-csv-cache"], "HIT")
         self.assertEqual(calls["csv"], 1)
+
+    def test_query_parameter_order_does_not_create_duplicate_entries(self):
+        app, calls = _build_app()
+
+        with TestClient(app) as client:
+            first = client.get("/report.csv?value=one&network=ethereum")
+            second = client.get("/report.csv?network=ethereum&value=one")
+
+        self.assertEqual(first.headers["x-csv-cache"], "MISS")
+        self.assertEqual(second.headers["x-csv-cache"], "HIT")
+        self.assertEqual(calls["csv"], 1)
+
+    def test_failed_csv_response_is_never_cached(self):
+        app, calls = _build_app()
+
+        with TestClient(app) as client:
+            first = client.get("/failure.csv")
+            second = client.get("/failure.csv")
+
+        self.assertEqual(first.status_code, 502)
+        self.assertEqual(second.status_code, 502)
+        self.assertNotIn("x-csv-cache", first.headers)
+        self.assertNotIn("x-csv-cache", second.headers)
+        self.assertEqual(calls["failure"], 2)
 
     def test_does_not_cache_non_csv_response(self):
         app, calls = _build_app()
