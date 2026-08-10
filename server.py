@@ -1,25 +1,16 @@
-import os
 import sys
 import logging
 import uvicorn
 from fastapi import FastAPI
 
 from contextlib import asynccontextmanager
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 from config import (
     CSV_CACHE_MAX_ENTRIES,
     CSV_CACHE_TTL_SECONDS,
-    DEBANK_ACCESS_KEY,
-    DEBANK_AUTO_SYNC_ENABLED,
     PORT,
-    get_target_ids,
-    get_scheduler_trigger_args,
-    RUN_ON_STARTUP,
 )
 from csv_cache import CSVMemoryCacheMiddleware
-from tasks import fetch_and_save_data
 
 
 @asynccontextmanager
@@ -44,57 +35,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error applying migrations: {e}")
 
-    # Startup logic
-    if not DEBANK_ACCESS_KEY:
-        logger.warning("DEBANK_ACCESS_KEY is not set in environment variables!")
-
-    scheduler = None
-    if DEBANK_AUTO_SYNC_ENABLED:
-        ids = get_target_ids()
-        logger.info(f"DeBank scheduler configured. Target IDs: {ids}")
-
-        if RUN_ON_STARTUP:
-            logger.info("RUN_ON_STARTUP is True. Executing DeBank fetch task now...")
-            await fetch_and_save_data()
-
-        trigger_args = get_scheduler_trigger_args()
-        scheduler = AsyncIOScheduler()
-        # Support both CronTrigger and IntervalTrigger based on config
-        if trigger_args["trigger"] == "cron":
-            trigger = CronTrigger(
-                hour=trigger_args["hour"], minute=trigger_args["minute"]
-            )
-            scheduler.add_job(fetch_and_save_data, trigger)
-            logger.info(
-                "DeBank scheduler started. Task will run daily at %02d:%02d",
-                trigger_args["hour"],
-                trigger_args["minute"],
-            )
-        else:
-            kwargs = trigger_args.copy()
-            kwargs.pop("trigger")
-            scheduler.add_job(fetch_and_save_data, "interval", **kwargs)
-            logger.info("DeBank scheduler started with interval: %s", kwargs)
-
-        scheduler.start()
-    else:
-        logger.info("Automatic DeBank updates are disabled")
-
     yield
 
-    # Shutdown logic
-    if scheduler is not None:
-        scheduler.shutdown()
 
-
-from routers.debt import router as debt_router
-from routers.stability import router as stability_router
-from routers.pool import router as pool_router
 from routers.auth import router as auth_router
 from routers.chains import router as chains_router
-from routers.debank import router as debank_router
-from routers.wallet import router as wallet_router
-from routers.history import router as history_router
 from routers.cmc import router as cmc_router
 from routers.paradex import router as paradex_router
 from routers.lighter import router as lighter_router
@@ -146,12 +91,6 @@ app.add_middleware(
     max_entries=CSV_CACHE_MAX_ENTRIES,
 )
 
-app.include_router(debt_router)
-app.include_router(stability_router)
-app.include_router(pool_router)
-app.include_router(debank_router)
-app.include_router(wallet_router)
-app.include_router(history_router)
 app.include_router(cmc_router)
 app.include_router(paradex_router)
 app.include_router(lighter_router)

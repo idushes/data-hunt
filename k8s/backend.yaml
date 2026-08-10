@@ -31,14 +31,6 @@ spec:
                 secretKeyRef:
                   name: data-hunt-db
                   key: DATABASE_URL
-            - name: DEBANK_HISTORY_SYNC_MAX_PAGES
-              value: "10"
-            - name: DEBANK_AUTO_SYNC_ENABLED
-              value: "false"
-            - name: DEBANK_PRICE_SYNC_MAX_CALLS
-              value: "20"
-            - name: DEBANK_MIN_UNITS_BALANCE
-              value: "100000"
           readinessProbe:
             httpGet:
               path: /health/readiness

@@ -1,25 +1,10 @@
 import os
-import logging
-from typing import List
 from dotenv import load_dotenv
 
 # Load .env file if exists
 load_dotenv()
 
 # Configuration
-DEBANK_ACCESS_KEY = os.environ.get("DEBANK_ACCESS_KEY")
-DEBANK_AUTO_SYNC_ENABLED = (
-    os.environ.get("DEBANK_AUTO_SYNC_ENABLED", "false").lower() == "true"
-)
-DEBANK_HISTORY_SYNC_MAX_PAGES = max(
-    1, int(os.environ.get("DEBANK_HISTORY_SYNC_MAX_PAGES", 10))
-)
-DEBANK_PRICE_SYNC_MAX_CALLS = max(
-    0, int(os.environ.get("DEBANK_PRICE_SYNC_MAX_CALLS", 20))
-)
-DEBANK_MIN_UNITS_BALANCE = max(
-    0, int(os.environ.get("DEBANK_MIN_UNITS_BALANCE", 100_000))
-)
 COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY")
 COINMARKETCAP_BASE_URL = os.environ.get(
     "COINMARKETCAP_BASE_URL", "https://pro-api.coinmarketcap.com"
@@ -29,9 +14,7 @@ COINMARKETCAP_CACHE_TTL_SECONDS = min(
 )
 CSV_CACHE_TTL_SECONDS = max(60, int(os.environ.get("CSV_CACHE_TTL_SECONDS", 60)))
 CSV_CACHE_MAX_ENTRIES = max(1, int(os.environ.get("CSV_CACHE_MAX_ENTRIES", 256)))
-UPDATE_INTERVAL = os.environ.get("UPDATE_INTERVAL", "24h")
 PORT = int(os.environ.get("PORT", 8111))
-RUN_ON_STARTUP = os.environ.get("RUN_ON_STARTUP", "false").lower() == "true"
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./data.db")
 SECRET_KEY = os.environ.get(
     "SECRET_KEY", "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
@@ -40,42 +23,3 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24)
 )
-
-
-def get_target_ids() -> List[str]:
-    """Scans environment variables for keys starting with TARGET_ID_"""
-    ids = []
-    for key, value in os.environ.items():
-        if key.startswith("TARGET_ID_"):
-            ids.append(value)
-    return ids
-
-
-def get_scheduler_trigger_args():
-    """Parses UPDATE_INTERVAL into scheduler trigger arguments"""
-    val = UPDATE_INTERVAL.strip()
-
-    # Cron capability (HH:MM)
-    if ":" in val:
-        try:
-            hour, minute = map(int, val.split(":"))
-            return {"trigger": "cron", "hour": hour, "minute": minute}
-        except ValueError:
-            logging.warning(
-                f"Invalid UPDATE_INTERVAL format '{val}', defaulting to 24h"
-            )
-            return {"trigger": "interval", "hours": 24}
-
-    # Interval capability
-    try:
-        if val.endswith("m"):
-            return {"trigger": "interval", "minutes": int(val[:-1])}
-        elif val.endswith("h"):
-            return {"trigger": "interval", "hours": int(val[:-1])}
-        elif val.endswith("d"):
-            return {"trigger": "interval", "days": int(val[:-1])}
-    except ValueError:
-        pass
-
-    logging.warning(f"Invalid UPDATE_INTERVAL format '{val}', defaulting to 24h")
-    return {"trigger": "interval", "hours": 24}

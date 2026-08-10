@@ -1,6 +1,5 @@
 import uuid
 from sqlalchemy import Column, String, Boolean, ForeignKey, Integer, Float
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -35,86 +34,4 @@ class AccountToken(Base):
     is_active = Column(Boolean, default=True)
 
     # But for compatibility with JWT `iat`, Integer (seconds) is fine.
-
-
-class DebankRequest(Base):
-    __tablename__ = "debank_request"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    account_id = Column(String, index=True, nullable=True) # Optional: if linked to a specific user
-    path = Column(String, nullable=False)
-    params = Column(String, nullable=True) # JSON string of params (e.g. addressed)
-    response_json = Column(String, nullable=True) # TEXT or Large String
-    status = Column(String, default="pending") # success, error, pending
-    cost = Column(Integer, nullable=True) # Cost of query, if we want to track
-    created_at = Column(Integer, nullable=False)
-
-
-class ProjectDict(Base):
-    __tablename__ = "project_dict"
-
-    id = Column(String, primary_key=True, unique=True) # e.g. "cowswap"
-    chain = Column(String, nullable=True) # e.g. "eth"
-    logo_url = Column(String, nullable=True)
-    name = Column(String, nullable=True)
-    site_url = Column(String, nullable=True)
-
-
-class TokenDict(Base):
-    __tablename__ = "token_dict"
-
-    id = Column(String, primary_key=True) # The address of the token contract
-    chain = Column(String, nullable=False) # The chain's name
-    name = Column(String, nullable=True)
-    symbol = Column(String, nullable=True)
-    display_symbol = Column(String, nullable=True)
-    optimized_symbol = Column(String, nullable=True) # optimized_symbol || display_symbol || symbol
-    decimals = Column(Integer, nullable=True)
-    logo_url = Column(String, nullable=True)
-    protocol_id = Column(String, nullable=True)
-
-    is_verified = Column(Boolean, nullable=True)
-    is_core = Column(Boolean, nullable=True)
-    is_wallet = Column(Boolean, nullable=True)
-    is_scam = Column(Boolean, nullable=True)
-    is_suspicious = Column(Boolean, nullable=True)
-    credit_score = Column(Float, nullable=True)
-    total_supply = Column(Float, nullable=True)
-    time_at = Column(Float, nullable=True) # Timestamp. Float to handle "1543095952.0"
-
-
-class CEXDict(Base):
-    __tablename__ = "cex_dict"
-
-    id = Column(String, primary_key=True) # address string, e.g. "0x..."
-    cex_id = Column(String, nullable=False) # e.g. "coinbase"
-    name = Column(String, nullable=True)
-    logo_url = Column(String, nullable=True)
-    is_deposit = Column(Boolean, nullable=True)
-    is_collect = Column(Boolean, nullable=True)
-    is_gastopup = Column(Boolean, nullable=True)
-    is_vault = Column(Boolean, nullable=True)
-    is_withdraw = Column(Boolean, nullable=True)
-
-
-class AddressHistory(Base):
-    __tablename__ = "address_history"
-
-    id = Column(String, primary_key=True) # transaction hash
-    chain = Column(String, primary_key=True) # chain id
-    address = Column(String, primary_key=True) # owner address
-    cate_id = Column(String, nullable=True) # call type
-    time_at = Column(Integer, nullable=True)
-    is_scam = Column(Boolean, default=False)
-    json = Column(JSONB, nullable=True)
-    prices_synced = Column(Boolean, default=False)
-
-
-class TokenPriceHistory(Base):
-    __tablename__ = "token_price_history"
-
-    token_id = Column(String, primary_key=True)   # contract address
-    chain = Column(String, primary_key=True)       # e.g. "arb", "eth"
-    date = Column(String, primary_key=True)        # "YYYY-MM-DD"
-    price = Column(Float, nullable=False)          # USD price on that date
 

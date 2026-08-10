@@ -1,0 +1,477 @@
+[
+  {
+    "id": "fuse",
+    "name": "Fuse",
+    "community_id": 122
+  },
+  {
+    "id": "era",
+    "name": "zkSync Era",
+    "community_id": 324
+  },
+  {
+    "id": "zero",
+    "name": "ZERϴ",
+    "community_id": 543210
+  },
+  {
+    "id": "movr",
+    "name": "Moonriver",
+    "community_id": 1285
+  },
+  {
+    "id": "eth",
+    "name": "Ethereum",
+    "community_id": 1
+  },
+  {
+    "id": "mobm",
+    "name": "Moonbeam",
+    "community_id": 1284
+  },
+  {
+    "id": "tlos",
+    "name": "Telos EVM",
+    "community_id": 40
+  },
+  {
+    "id": "frax",
+    "name": "Fraxtal",
+    "community_id": 252
+  },
+  {
+    "id": "bera",
+    "name": "Berachain",
+    "community_id": 80094
+  },
+  {
+    "id": "canto",
+    "name": "Canto",
+    "community_id": 7700
+  },
+  {
+    "id": "karak",
+    "name": "Karak",
+    "community_id": 2410
+  },
+  {
+    "id": "opbnb",
+    "name": "opBNB",
+    "community_id": 204
+  },
+  {
+    "id": "bb",
+    "name": "BounceBit",
+    "community_id": 6001
+  },
+  {
+    "id": "reya",
+    "name": "Reya",
+    "community_id": 1729
+  },
+  {
+    "id": "mnt",
+    "name": "Mantle",
+    "community_id": 5000
+  },
+  {
+    "id": "plasma",
+    "name": "Plasma",
+    "community_id": 9745
+  },
+  {
+    "id": "cro",
+    "name": "Cronos",
+    "community_id": 25
+  },
+  {
+    "id": "uni",
+    "name": "Unichain",
+    "community_id": 130
+  },
+  {
+    "id": "zircuit",
+    "name": "Zircuit",
+    "community_id": 48900
+  },
+  {
+    "id": "morph",
+    "name": "Morph",
+    "community_id": 2818
+  },
+  {
+    "id": "hyper",
+    "name": "HyperEVM",
+    "community_id": 999
+  },
+  {
+    "id": "linea",
+    "name": "Linea",
+    "community_id": 59144
+  },
+  {
+    "id": "base",
+    "name": "Base",
+    "community_id": 8453
+  },
+  {
+    "id": "mode",
+    "name": "Mode",
+    "community_id": 34443
+  },
+  {
+    "id": "croze",
+    "name": "Cronos zkEVM",
+    "community_id": 388
+  },
+  {
+    "id": "monad",
+    "name": "Monad",
+    "community_id": 143
+  },
+  {
+    "id": "op",
+    "name": "OP",
+    "community_id": 10
+  },
+  {
+    "id": "wemix",
+    "name": "WEMIX",
+    "community_id": 1111
+  },
+  {
+    "id": "oas",
+    "name": "Oasys",
+    "community_id": 248
+  },
+  {
+    "id": "itze",
+    "name": "Immutable zkEVM",
+    "community_id": 13371
+  },
+  {
+    "id": "goat",
+    "name": "GOAT",
+    "community_id": 2345
+  },
+  {
+    "id": "gravity",
+    "name": "Gravity",
+    "community_id": 1625
+  },
+  {
+    "id": "shib",
+    "name": "Shibarium",
+    "community_id": 109
+  },
+  {
+    "id": "zeta",
+    "name": "ZetaChain",
+    "community_id": 7000
+  },
+  {
+    "id": "matic",
+    "name": "Polygon",
+    "community_id": 137
+  },
+  {
+    "id": "stable",
+    "name": "Stable",
+    "community_id": 988
+  },
+  {
+    "id": "ethlink",
+    "name": "Etherlink",
+    "community_id": 42793
+  },
+  {
+    "id": "duck",
+    "name": "DuckChain",
+    "community_id": 5545
+  },
+  {
+    "id": "zora",
+    "name": "Zora",
+    "community_id": 7777777
+  },
+  {
+    "id": "rsk",
+    "name": "Rootstock",
+    "community_id": 30
+  },
+  {
+    "id": "ftm",
+    "name": "Fantom",
+    "community_id": 250
+  },
+  {
+    "id": "blast",
+    "name": "Blast",
+    "community_id": 81457
+  },
+  {
+    "id": "nova",
+    "name": "Arbitrum Nova",
+    "community_id": 42170
+  },
+  {
+    "id": "katana",
+    "name": "Katana",
+    "community_id": 747474
+  },
+  {
+    "id": "merlin",
+    "name": "Merlin",
+    "community_id": 4200
+  },
+  {
+    "id": "plume",
+    "name": "Plume",
+    "community_id": 98866
+  },
+  {
+    "id": "botanix",
+    "name": "Botanix",
+    "community_id": 3637
+  },
+  {
+    "id": "sei",
+    "name": "Sei",
+    "community_id": 1329
+  },
+  {
+    "id": "doge",
+    "name": "Dogechain",
+    "community_id": 2000
+  },
+  {
+    "id": "abs",
+    "name": "Abstract",
+    "community_id": 2741
+  },
+  {
+    "id": "mito",
+    "name": "Mitosis",
+    "community_id": 124816
+  },
+  {
+    "id": "celo",
+    "name": "Celo",
+    "community_id": 42220
+  },
+  {
+    "id": "flr",
+    "name": "Flare",
+    "community_id": 14
+  },
+  {
+    "id": "btr",
+    "name": "Bitlayer",
+    "community_id": 200901
+  },
+  {
+    "id": "vana",
+    "name": "Vana",
+    "community_id": 1480
+  },
+  {
+    "id": "metis",
+    "name": "Metis",
+    "community_id": 1088
+  },
+  {
+    "id": "story",
+    "name": "Story",
+    "community_id": 1514
+  },
+  {
+    "id": "xrpl",
+    "name": "XRPL EVM",
+    "community_id": 1440000
+  },
+  {
+    "id": "astar",
+    "name": "Astar",
+    "community_id": 592
+  },
+  {
+    "id": "taiko",
+    "name": "Taiko",
+    "community_id": 167000
+  },
+  {
+    "id": "arb",
+    "name": "Arbitrum",
+    "community_id": 42161
+  },
+  {
+    "id": "xlayer",
+    "name": "X Layer",
+    "community_id": 196
+  },
+  {
+    "id": "xdai",
+    "name": "Gnosis Chain",
+    "community_id": 100
+  },
+  {
+    "id": "chiliz",
+    "name": "Chiliz",
+    "community_id": 88888
+  },
+  {
+    "id": "ron",
+    "name": "Ronin",
+    "community_id": 2020
+  },
+  {
+    "id": "bob",
+    "name": "BOB",
+    "community_id": 60808
+  },
+  {
+    "id": "ape",
+    "name": "ApeChain",
+    "community_id": 33139
+  },
+  {
+    "id": "scrl",
+    "name": "Scroll",
+    "community_id": 534352
+  },
+  {
+    "id": "kava",
+    "name": "Kava",
+    "community_id": 2222
+  },
+  {
+    "id": "core",
+    "name": "CORE",
+    "community_id": 1116
+  },
+  {
+    "id": "lens",
+    "name": "Lens",
+    "community_id": 232
+  },
+  {
+    "id": "klay",
+    "name": "Kaia",
+    "community_id": 8217
+  },
+  {
+    "id": "sophon",
+    "name": "Sophon",
+    "community_id": 50104
+  },
+  {
+    "id": "soneium",
+    "name": "Soneium",
+    "community_id": 1868
+  },
+  {
+    "id": "ink",
+    "name": "Ink",
+    "community_id": 57073
+  },
+  {
+    "id": "orderly",
+    "name": "Orderly",
+    "community_id": 291
+  },
+  {
+    "id": "bsc",
+    "name": "BNB Chain",
+    "community_id": 56
+  },
+  {
+    "id": "cyber",
+    "name": "Cyber",
+    "community_id": 7560
+  },
+  {
+    "id": "iotx",
+    "name": "IoTeX",
+    "community_id": 4689
+  },
+  {
+    "id": "rari",
+    "name": "RARI",
+    "community_id": 1380012617
+  },
+  {
+    "id": "world",
+    "name": "World Chain",
+    "community_id": 480
+  },
+  {
+    "id": "dbk",
+    "name": "DBK Chain",
+    "community_id": 20240603
+  },
+  {
+    "id": "lisk",
+    "name": "Lisk",
+    "community_id": 1135
+  },
+  {
+    "id": "sonic",
+    "name": "Sonic",
+    "community_id": 146
+  },
+  {
+    "id": "boba",
+    "name": "Boba",
+    "community_id": 288
+  },
+  {
+    "id": "hsk",
+    "name": "HashKey",
+    "community_id": 177
+  },
+  {
+    "id": "tac",
+    "name": "TAC",
+    "community_id": 239
+  },
+  {
+    "id": "hemi",
+    "name": "Hemi",
+    "community_id": 43111
+  },
+  {
+    "id": "corn",
+    "name": "Corn",
+    "community_id": 21000000
+  },
+  {
+    "id": "b2",
+    "name": "B²",
+    "community_id": 223
+  },
+  {
+    "id": "manta",
+    "name": "Manta Pacific",
+    "community_id": 169
+  },
+  {
+    "id": "swell",
+    "name": "SwellChain",
+    "community_id": 1923
+  },
+  {
+    "id": "avax",
+    "name": "Avalanche",
+    "community_id": 43114
+  },
+  {
+    "id": "cfx",
+    "name": "Conflux",
+    "community_id": 1030
+  },
+  {
+    "id": "dfk",
+    "name": "DFK",
+    "community_id": 53935
+  }
+]

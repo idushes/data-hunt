@@ -13,10 +13,6 @@ class ValueSource:
 
 
 VALUE_SOURCES = {
-    "debt": ValueSource("/debt", "id"),
-    "stability": ValueSource("/stability", "id"),
-    "pool": ValueSource("/pool", "id"),
-    "wallet": ValueSource("/wallet", "id"),
     "paradex": ValueSource("/paradex/balance", "account"),
     "lighter": ValueSource("/lighter/balance", "account_index"),
     "hyperliquid": ValueSource("/hyperliquid/balance", "account"),
