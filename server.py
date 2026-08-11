@@ -11,7 +11,6 @@ from config import (
     CSV_CACHE_MAX_ENTRIES,
     CSV_CACHE_TTL_SECONDS,
     PORT,
-    VALUE_RATE_LIMIT_ANONYMOUS,
     VALUE_RATE_LIMIT_AUTHENTICATED,
     VALUE_RATE_LIMIT_WINDOW_SECONDS,
 )
@@ -70,7 +69,11 @@ async def lifespan(app: FastAPI):
 
 
 def get_description_with_chains():
-    base_desc = "API for Data Hunt project."
+    base_desc = (
+        "API for Data Hunt project. Data endpoints require authentication: "
+        "use a login Bearer token for interactive requests or a revocable "
+        "`auth_token` from `/web3/sheets-token` for read-only GET requests."
+    )
     try:
         chains = load_chains()
 
@@ -104,7 +107,6 @@ app.add_middleware(
 app.add_middleware(
     ValueRateLimitMiddleware,
     authenticated_limit=VALUE_RATE_LIMIT_AUTHENTICATED,
-    anonymous_limit=VALUE_RATE_LIMIT_ANONYMOUS,
     window_seconds=VALUE_RATE_LIMIT_WINDOW_SECONDS,
 )
 

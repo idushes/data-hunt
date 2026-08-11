@@ -14,6 +14,10 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import ValueResource
+from value_rate_limit import (
+    DATA_ACCESS_INTERNAL_HEADER,
+    DATA_ACCESS_INTERNAL_TOKEN,
+)
 
 
 @dataclass(frozen=True)
@@ -261,7 +265,9 @@ async def _request_source(
     path: str,
     forwarded_query: list[tuple[str, str]],
 ) -> httpx.Response:
-    forwarded_headers = {}
+    forwarded_headers = {
+        DATA_ACCESS_INTERNAL_HEADER: DATA_ACCESS_INTERNAL_TOKEN,
+    }
     authorization = request.headers.get("authorization")
     if authorization:
         forwarded_headers["authorization"] = authorization

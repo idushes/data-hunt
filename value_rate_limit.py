@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import secrets
 import time
 from dataclasses import dataclass
 from urllib.parse import parse_qsl
@@ -15,7 +16,6 @@ from starlette.responses import JSONResponse
 from config import (
     ALGORITHM,
     SECRET_KEY,
-    VALUE_RATE_LIMIT_ANONYMOUS,
     VALUE_RATE_LIMIT_AUTHENTICATED,
     VALUE_RATE_LIMIT_WINDOW_SECONDS,
 )
@@ -25,6 +25,31 @@ from redis_client import get_redis_client
 
 
 logger = logging.getLogger(__name__)
+
+DATA_ACCESS_INTERNAL_HEADER = "x-datahunt-internal-token"
+DATA_ACCESS_INTERNAL_TOKEN = secrets.token_urlsafe(32)
+PROTECTED_DATA_PREFIXES = (
+    "/aave",
+    "/cmc",
+    "/coinbase",
+    "/compound",
+    "/euler",
+    "/fluid",
+    "/gmx",
+    "/hyperliquid",
+    "/jupiter",
+    "/lido",
+    "/lighter",
+    "/morpho",
+    "/paradex",
+    "/solana",
+    "/stablecoins",
+    "/stakedao",
+    "/uniswap",
+    "/value",
+    "/value-resources",
+    "/v",
+)
 
 INCREMENT_RATE_LIMIT_SCRIPT = """
 local count = redis.call('INCR', KEYS[1])
@@ -45,20 +70,18 @@ class RateLimitStatus:
 
 
 class ValueRateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate-limit saved-value reads and registrations by account or client IP."""
+    """Require authentication and rate-limit every data request by account."""
 
     def __init__(
         self,
         app,
         authenticated_limit: int = VALUE_RATE_LIMIT_AUTHENTICATED,
-        anonymous_limit: int = VALUE_RATE_LIMIT_ANONYMOUS,
         window_seconds: int = VALUE_RATE_LIMIT_WINDOW_SECONDS,
         redis_client: Redis | None = None,
         session_factory=SessionLocal,
     ):
         super().__init__(app)
         self.authenticated_limit = max(1, authenticated_limit)
-        self.anonymous_limit = max(1, anonymous_limit)
         self.window_seconds = max(1, window_seconds)
         self._redis_client = redis_client
         self._session_factory = session_factory
@@ -68,10 +91,20 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _is_limited_request(request: Request) -> bool:
+        if request.method.upper() == "OPTIONS":
+            return False
         path = request.url.path.rstrip("/") or "/"
-        method = request.method.upper()
-        return (method == "GET" and (path == "/value" or path.startswith("/v/"))) or (
-            method == "POST" and path == "/value-resources"
+        return any(
+            path == prefix or path.startswith(f"{prefix}/")
+            for prefix in PROTECTED_DATA_PREFIXES
+        )
+
+    @staticmethod
+    def _is_internal_request(request: Request) -> bool:
+        supplied = request.headers.get(DATA_ACCESS_INTERNAL_HEADER, "")
+        return bool(supplied) and secrets.compare_digest(
+            supplied,
+            DATA_ACCESS_INTERNAL_TOKEN,
         )
 
     @staticmethod
@@ -95,6 +128,8 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
         query_supplied, query_token = self._query_token(request)
         header_supplied, header_token = self._bearer_token(request)
         if query_supplied:
+            if request.method.upper() != "GET":
+                raise ValueError("A login token is required for this operation")
             token = query_token
             expected_purpose = "sheets"
         elif header_supplied:
@@ -133,17 +168,6 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
         if stored_token is None:
             raise ValueError("Access token is invalid or revoked")
         return account_id
-
-    @staticmethod
-    def _anonymous_identity(request: Request) -> str:
-        forwarded_for = request.headers.get("x-forwarded-for", "")
-        # Nginx appends the directly connected client to the right-hand side.
-        # Using that value prevents a caller-supplied left-most address from
-        # choosing an arbitrary rate-limit bucket.
-        host = forwarded_for.rsplit(",", 1)[-1].strip()
-        if not host:
-            host = request.client.host if request.client else "unknown"
-        return f"ip:{host}"
 
     @staticmethod
     def _rate_key(identity: str) -> str:
@@ -216,6 +240,8 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         if not self._is_limited_request(request):
             return await call_next(request)
+        if self._is_internal_request(request):
+            return await call_next(request)
 
         try:
             account_id = self._account_identity(request)
@@ -226,11 +252,18 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
             )
 
         if account_id is None:
-            identity = self._anonymous_identity(request)
-            limit = self.anonymous_limit
-        else:
-            identity = f"account:{account_id}"
-            limit = self.authenticated_limit
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={
+                    "detail": (
+                        "Authentication required. Sign in and provide a "
+                        "revocable Sheets access token."
+                    )
+                },
+            )
+
+        identity = f"account:{account_id}"
+        limit = self.authenticated_limit
 
         rate = await self._increment(self._rate_key(identity), limit)
         headers = self._headers(rate)
@@ -239,7 +272,7 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={
-                    "detail": "Rate limit exceeded. Try again later or sign in for a higher limit."
+                    "detail": "Rate limit exceeded. Try again later."
                 },
                 headers=headers,
             )
@@ -247,4 +280,6 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         for name, value in headers.items():
             response.headers[name] = value
+        if request.method.upper() == "GET" and response.status_code < 400:
+            response.headers["Cache-Control"] = "private, max-age=60"
         return response

@@ -45,8 +45,6 @@ spec:
               value: "60"
             - name: VALUE_RATE_LIMIT_AUTHENTICATED
               value: "120"
-            - name: VALUE_RATE_LIMIT_ANONYMOUS
-              value: "10"
           readinessProbe:
             httpGet:
               path: /health/readiness
