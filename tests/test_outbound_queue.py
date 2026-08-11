@@ -67,6 +67,56 @@ class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, 0)
         self.assertGreater(second, 0.45)
 
+    async def test_status_reports_waiting_and_in_flight_requests(self):
+        queue = OutboundRequestQueue()
+        policy = queue.policy_for_host("mainnet.zklighter.elliot.ai")
+        release = queue_module.asyncio.Event()
+        started = 0
+        both_started = queue_module.asyncio.Event()
+
+        async def worker():
+            nonlocal started
+            async with queue.slot(policy, 1):
+                started += 1
+                if started == policy.concurrency:
+                    both_started.set()
+                await release.wait()
+
+        with (
+            patch("outbound_queue.get_redis_client", return_value=None),
+            patch.object(queue, "_reserve_redis", AsyncMock(return_value=0)),
+        ):
+            active_tasks = [
+                queue_module.asyncio.create_task(worker())
+                for _ in range(policy.concurrency)
+            ]
+            await queue_module.asyncio.wait_for(both_started.wait(), timeout=1)
+            waiting_task = queue_module.asyncio.create_task(worker())
+            for _ in range(20):
+                if queue._local_waiting.get(policy.name) == 1:
+                    break
+                await queue_module.asyncio.sleep(0)
+
+            status = await queue.status(include_activity=True)
+            provider = next(
+                item for item in status["providers"] if item["provider"] == policy.name
+            )
+            self.assertEqual(provider["in_flight"], policy.concurrency)
+            self.assertEqual(provider["waiting"], 1)
+            self.assertEqual(provider["utilization_percent"], 100.0)
+
+            release.set()
+            await queue_module.asyncio.gather(*active_tasks, waiting_task)
+            final_status = await queue.status(include_activity=True)
+
+        final_provider = next(
+            item
+            for item in final_status["providers"]
+            if item["provider"] == policy.name
+        )
+        self.assertEqual(final_provider["in_flight"], 0)
+        self.assertEqual(final_provider["waiting"], 0)
+
 
 class QueuedTransportTest(unittest.IsolatedAsyncioTestCase):
     async def test_429_is_delayed_and_retried(self):

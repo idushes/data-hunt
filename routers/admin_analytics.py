@@ -9,6 +9,7 @@ from config import FEATURE_REQUEST_ADMIN_ADDRESSES
 from database import get_db
 from dependencies import get_current_account
 from models import Account, UsageDaily
+from outbound_queue import outbound_queue
 
 
 router = APIRouter(prefix="/admin/analytics", tags=["admin analytics"])
@@ -33,6 +34,15 @@ def _day_label(day: int) -> str:
     return datetime.fromtimestamp(day * 86400, tz=timezone.utc).date().isoformat()
 
 
+@router.get("/queues")
+async def get_admin_queue_status(
+    response: Response,
+    _: Account = Depends(_require_admin),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await outbound_queue.status(include_activity=True)
+
+
 @router.get("")
 async def get_admin_analytics(
     response: Response,
@@ -51,20 +61,23 @@ async def get_admin_analytics(
     first_day = current_day - days + 1
     period = db.query(UsageDaily).filter(UsageDaily.day >= first_day)
     total_requests = int(
-        period.with_entities(func.coalesce(func.sum(UsageDaily.request_count), 0))
-        .scalar()
+        period.with_entities(
+            func.coalesce(func.sum(UsageDaily.request_count), 0)
+        ).scalar()
         or 0
     )
     active_users = int(
-        period.with_entities(func.count(distinct(UsageDaily.account_id))).scalar()
-        or 0
+        period.with_entities(func.count(distinct(UsageDaily.account_id))).scalar() or 0
     )
     error_requests = int(
         period.with_entities(
             func.coalesce(
                 func.sum(
                     case(
-                        (UsageDaily.status_group != "success", UsageDaily.request_count),
+                        (
+                            UsageDaily.status_group != "success",
+                            UsageDaily.request_count,
+                        ),
                         else_=0,
                     )
                 ),

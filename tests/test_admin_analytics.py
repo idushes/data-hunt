@@ -1,5 +1,6 @@
 import time
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -155,6 +156,45 @@ class AdminAnalyticsTest(unittest.TestCase):
 
         self.assertEqual(forbidden.status_code, 403)
         self.assertEqual(invalid_period.status_code, 400)
+
+    def test_returns_private_live_queue_status_to_admin_only(self):
+        admin_token = self._token("admin-account", "admin-token")
+        user_token = self._token("user-account", "user-token")
+        queue_status = {
+            "enabled": True,
+            "redis": True,
+            "max_wait_seconds": 30,
+            "providers": [
+                {
+                    "provider": "coinbase",
+                    "waiting": 3,
+                    "in_flight": 2,
+                    "concurrency": 4,
+                }
+            ],
+        }
+        with (
+            patch.object(
+                admin_analytics.outbound_queue,
+                "status",
+                AsyncMock(return_value=queue_status),
+            ) as queue_status_mock,
+            TestClient(self.app) as client,
+        ):
+            response = client.get(
+                "/admin/analytics/queues",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            forbidden = client.get(
+                "/admin/analytics/queues",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["cache-control"], "private, no-store")
+        self.assertEqual(response.json(), queue_status)
+        self.assertEqual(forbidden.status_code, 403)
+        queue_status_mock.assert_awaited_once_with(include_activity=True)
 
 
 if __name__ == "__main__":

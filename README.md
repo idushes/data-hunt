@@ -11,7 +11,8 @@ Example:
 FEATURE_REQUEST_ADMIN_ADDRESSES=0x1234...,0xabcd...
 ```
 
-The same admin wallet list protects `GET /admin/analytics`. Usage analytics
+The same admin wallet list protects `GET /admin/analytics` and
+`GET /admin/analytics/queues`. Usage analytics
 store only daily request counts grouped by internal account ID, source, and
 response class. Wallet addresses, IP addresses, query parameters, formulas,
 and credentials are not stored in analytics.
@@ -33,6 +34,10 @@ Provider defaults live in `outbound_queue.py`. Override individual limits with
 ```env
 OUTBOUND_API_LIMITS_JSON={"coinbase":{"requests":5,"period_seconds":1,"concurrency":2}}
 ```
+
+The admin queue endpoint reports live waiting and in-flight counts aggregated
+across backend instances. Per-instance Redis counters expire automatically, so
+an interrupted instance cannot leave stale activity in the dashboard.
 
 ## Multi-wallet stablecoin balances
 
