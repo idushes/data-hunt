@@ -8,6 +8,7 @@ import httpx
 from fastapi import HTTPException
 
 from routers.polymarket import (
+    POLYMARKET_CSV_HEADER,
     POLYMARKET_PAGE_SIZE,
     POLYMARKET_PUSD_ADDRESS,
     _fetch_pusd_balance,
@@ -53,6 +54,30 @@ def _position(asset: str = "123456789") -> dict[str, object]:
 
 
 class PolymarketParserTest(unittest.TestCase):
+    def test_appends_pusd_fields_without_shifting_existing_csv_columns(self):
+        self.assertEqual(
+            POLYMARKET_CSV_HEADER[:7],
+            [
+                "wallet",
+                "chain_id",
+                "chain",
+                "protocol",
+                "position_id",
+                "row_type",
+                "asset_id",
+            ],
+        )
+        self.assertEqual(
+            POLYMARKET_CSV_HEADER[-5:],
+            [
+                "token_symbol",
+                "token_address",
+                "balance",
+                "balance_usd",
+                "total_account_value_usd",
+            ],
+        )
+
     def test_normalizes_wallet(self):
         self.assertEqual(_normalize_wallet(WALLET.upper().replace("0X", "0x")), WALLET)
 

@@ -27,10 +27,6 @@ POLYMARKET_CSV_HEADER = [
     "protocol",
     "position_id",
     "row_type",
-    "token_symbol",
-    "token_address",
-    "balance",
-    "balance_usd",
     "asset_id",
     "condition_id",
     "title",
@@ -57,6 +53,10 @@ POLYMARKET_CSV_HEADER = [
     "end_date",
     "negative_risk",
     "portfolio_value_usd",
+    "token_symbol",
+    "token_address",
+    "balance",
+    "balance_usd",
     "total_account_value_usd",
 ]
 
