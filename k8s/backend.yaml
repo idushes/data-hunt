@@ -45,6 +45,8 @@ spec:
               value: "60"
             - name: VALUE_RATE_LIMIT_AUTHENTICATED
               value: "120"
+            - name: FEATURE_REQUEST_ADMIN_ADDRESSES
+              value: "0x6272AB4F91e0dF14AcB6a2A311d817381210E339"
           readinessProbe:
             httpGet:
               path: /health/readiness
