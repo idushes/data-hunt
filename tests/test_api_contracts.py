@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from routers.aave import AAVE_CSV_HEADER
 from routers.bybit import BYBIT_CSV_HEADER
@@ -116,6 +117,12 @@ PUBLISHED_CSV_HEADERS = {
 
 
 class PublishedApiContractTest(unittest.TestCase):
+    def test_docker_image_includes_credential_capsule_modules(self):
+        dockerfile = Path("Dockerfile").read_text()
+
+        self.assertIn("coinbase_capsule.py", dockerfile)
+        self.assertIn("bybit_capsule.py", dockerfile)
+
     def test_value_source_aliases_and_paths_do_not_change_silently(self):
         self.assertEqual(VALUE_SOURCES, PUBLISHED_VALUE_SOURCES)
 
