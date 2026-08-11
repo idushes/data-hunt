@@ -17,6 +17,7 @@ from web3._utils.abi import collapse_if_tuple
 UNISWAP_CACHE_TTL_SECONDS = 60
 UNISWAP_MAX_POSITIONS = 200
 MAX_UINT128 = (2**128) - 1
+RPC_BATCH_SIZE = 20
 UNISWAP_V3_POSITION_MANAGER = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
 UNISWAP_V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
 ETHEREUM_USD_STABLECOINS = {
@@ -305,6 +306,7 @@ async def _rpc_batch_calls(
     rpc_url: str,
     calls: list[tuple[str, Any]],
     from_address: str | None = None,
+    protocol: str = "Uniswap",
 ) -> list[tuple[Any, ...] | None]:
     if not calls:
         return []
@@ -325,21 +327,26 @@ async def _rpc_batch_calls(
                 "params": [transaction, "latest"],
             }
         )
-    try:
-        response = await client.post(rpc_url, json=payload)
-        response.raise_for_status()
-        items = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="Uniswap RPC request failed",
-        ) from exc
+    items: list[Any] = []
+    for offset in range(0, len(payload), RPC_BATCH_SIZE):
+        try:
+            response = await client.post(
+                rpc_url, json=payload[offset : offset + RPC_BATCH_SIZE]
+            )
+            response.raise_for_status()
+            batch_items = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"{protocol} RPC request failed",
+            ) from exc
 
-    if not isinstance(items, list):
-        raise HTTPException(
-            status_code=502,
-            detail="Uniswap RPC returned an invalid batch response",
-        )
+        if not isinstance(batch_items, list):
+            raise HTTPException(
+                status_code=502,
+                detail=f"{protocol} RPC returned an invalid batch response",
+            )
+        items.extend(batch_items)
 
     by_id = {
         item.get("id"): item
@@ -371,17 +378,19 @@ def _required_call(result: tuple[Any, ...] | None, detail: str) -> tuple[Any, ..
     return result
 
 
-async def _fetch_uniswap_rows(
+async def _fetch_v3_rows(
     wallet: str,
     chain_id: int,
     include_closed: bool,
+    chains: dict[int, dict[str, Any]],
+    protocol: str,
 ) -> list[dict[str, str]]:
-    chain = UNISWAP_CHAINS.get(chain_id)
+    chain = chains.get(chain_id)
     if chain is None:
-        supported = ", ".join(str(value) for value in sorted(UNISWAP_CHAINS))
+        supported = ", ".join(str(value) for value in sorted(chains))
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported Uniswap chain ID. Supported: {supported}",
+            detail=f"Unsupported {protocol} chain ID. Supported: {supported}",
         )
 
     rpc_url = os.getenv(str(chain["rpc_env"])) or str(chain["rpc_url"])
@@ -391,6 +400,7 @@ async def _fetch_uniswap_rows(
     factory = w3.eth.contract(
         address=Web3.to_checksum_address(str(chain["factory"])), abi=FACTORY_ABI
     )
+    pool_abi = chain.get("pool_abi", POOL_ABI)
     checksum_wallet = Web3.to_checksum_address(wallet)
 
     async with queued_async_client(timeout=20.0, trust_env=False) as client:
@@ -405,16 +415,17 @@ async def _fetch_uniswap_rows(
                             manager.functions.balanceOf(checksum_wallet),
                         )
                     ],
+                    protocol=protocol,
                 )
             )[0],
-            "Failed to read Uniswap position count",
+            f"Failed to read {protocol} position count",
         )
         count = int(count_result[0])
         if count > UNISWAP_MAX_POSITIONS:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Wallet has {count} Uniswap positions; maximum supported is "
+                    f"Wallet has {count} {protocol} positions; maximum supported is "
                     f"{UNISWAP_MAX_POSITIONS}"
                 ),
             )
@@ -429,9 +440,10 @@ async def _fetch_uniswap_rows(
                 )
                 for index in range(count)
             ],
+            protocol=protocol,
         )
         token_ids = [
-            int(_required_call(result, "Failed to read Uniswap token ID")[0])
+            int(_required_call(result, f"Failed to read {protocol} token ID")[0])
             for result in token_id_results
         ]
         raw_position_results = await _rpc_batch_calls(
@@ -441,9 +453,10 @@ async def _fetch_uniswap_rows(
                 (manager_address, manager.functions.positions(token_id))
                 for token_id in token_ids
             ],
+            protocol=protocol,
         )
         raw_positions = [
-            _required_call(result, f"Failed to read Uniswap token ID {token_id}")
+            _required_call(result, f"Failed to read {protocol} token ID {token_id}")
             for token_id, result in zip(token_ids, raw_position_results, strict=False)
         ]
 
@@ -474,6 +487,7 @@ async def _fetch_uniswap_rows(
                 for token_id, _ in positions
             ],
             from_address=checksum_wallet,
+            protocol=protocol,
         )
         claimable_fees_raw = {
             token_id: (
@@ -509,7 +523,9 @@ async def _fetch_uniswap_rows(
             (address, token_contracts[address].functions.decimals())
             for address in token_addresses
         ]
-        metadata_results = await _rpc_batch_calls(client, rpc_url, metadata_calls)
+        metadata_results = await _rpc_batch_calls(
+            client, rpc_url, metadata_calls, protocol=protocol
+        )
         token_count = len(token_addresses)
         metadata = {}
         for index, address in enumerate(token_addresses):
@@ -543,6 +559,7 @@ async def _fetch_uniswap_rows(
                 )
                 for token0_address, token1_address, fee in pool_keys
             ],
+            protocol=protocol,
         )
         pool_by_key = {
             key: str(result[0]).lower()
@@ -552,7 +569,7 @@ async def _fetch_uniswap_rows(
         unique_pools = sorted(set(pool_by_key.values()))
         pool_contracts = {
             pool_address: w3.eth.contract(
-                address=Web3.to_checksum_address(pool_address), abi=POOL_ABI
+                address=Web3.to_checksum_address(pool_address), abi=pool_abi
             )
             for pool_address in unique_pools
         }
@@ -563,10 +580,11 @@ async def _fetch_uniswap_rows(
                 (pool_address, pool_contracts[pool_address].functions.slot0())
                 for pool_address in unique_pools
             ],
+            protocol=protocol,
         )
         slot0_by_pool = {
             pool_address: _required_call(
-                result, f"Failed to read Uniswap pool {pool_address}"
+                result, f"Failed to read {protocol} pool {pool_address}"
             )
             for pool_address, result in zip(
                 unique_pools, slot0_results, strict=False
@@ -627,7 +645,7 @@ async def _fetch_uniswap_rows(
                 "wallet": wallet,
                 "chain_id": str(chain_id),
                 "chain": str(chain["name"]),
-                "protocol": "Uniswap V3",
+                "protocol": protocol,
                 "position_manager": manager_address.lower(),
                 "position_id": f"{chain_id}:{manager_address.lower()}:{token_id}",
                 "token_id": str(token_id),
@@ -672,6 +690,20 @@ async def _fetch_uniswap_rows(
         )
 
     return sorted(rows, key=lambda row: int(row["token_id"]))
+
+
+async def _fetch_uniswap_rows(
+    wallet: str,
+    chain_id: int,
+    include_closed: bool,
+) -> list[dict[str, str]]:
+    return await _fetch_v3_rows(
+        wallet,
+        chain_id,
+        include_closed,
+        UNISWAP_CHAINS,
+        "Uniswap V3",
+    )
 
 
 def _render_csv(rows: list[dict[str, str]]) -> str:

@@ -72,6 +72,15 @@ ownership is verified onchain. Pass `include_closed=true` to include NFT
 positions whose liquidity is zero. Responses use the shared 60-second CSV
 cache and the existing per-provider RPC and Blockscout queues.
 
+## PancakeSwap V3 positions
+
+`GET /pancakeswap/positions.csv?address=0x...&chain_id=56` returns owned
+PancakeSwap V3 NFT liquidity positions on BNB Chain or Ethereum. The export
+includes current token amounts, range status, USD value when one side is a
+known stablecoin, and fees available to claim. Pass `include_closed=true` to
+include positions with zero liquidity and no remaining fees. Responses use the
+shared 60-second CSV cache and the chain-specific outbound RPC queue.
+
 ## Multi-wallet stablecoin balances
 
 `GET /stablecoins/balances.csv` accepts up to 20 wallets per request across

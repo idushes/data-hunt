@@ -51,6 +51,7 @@ DEFAULT_POLICIES = (
     ProviderPolicy("aave_v3", ("api.v3.aave.com",), 3, 1, 2),
     ProviderPolicy("aave_v4", ("api.v4.aave.com",), 3, 1, 2),
     ProviderPolicy("ethereum_rpc", ("ethereum-rpc.publicnode.com",), 4, 1, 4),
+    ProviderPolicy("bsc_rpc", ("bsc-dataseed.bnbchain.org",), 20, 1, 4),
     ProviderPolicy("monad_rpc", ("rpc.monad.xyz",), 4, 1, 4),
     ProviderPolicy(
         "solana_rpc",

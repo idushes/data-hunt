@@ -50,6 +50,7 @@ PROTECTED_DATA_PREFIXES = (
     "/stablecoins",
     "/stakedao",
     "/uniswap",
+    "/pancakeswap",
     "/value",
     "/value-resources",
     "/v",

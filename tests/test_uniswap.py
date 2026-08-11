@@ -13,6 +13,7 @@ from routers.uniswap import (
     MONAD_USD_STABLECOINS,
     POSITION_MANAGER_ABI,
     Q96,
+    RPC_BATCH_SIZE,
     UNISWAP_CHAINS,
     _fetch_uniswap_rows,
     _human_price,
@@ -176,6 +177,43 @@ class UniswapValidationTest(unittest.IsolatedAsyncioTestCase):
             payload[0]["params"][0]["from"], Web3.to_checksum_address(WALLET)
         )
         self.assertEqual(result[0], (4_165 * 10**18, 89 * 10**6))
+
+    async def test_rpc_batches_are_chunked(self):
+        manager_address = UNISWAP_CHAINS[1]["position_manager"]
+        manager = Web3().eth.contract(
+            address=Web3.to_checksum_address(manager_address),
+            abi=POSITION_MANAGER_ABI,
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+
+        def response_for(_url, *, json):
+            encoded = Web3().codec.encode(["uint256"], [0])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "jsonrpc": "2.0",
+                        "id": item["id"],
+                        "result": f"0x{encoded.hex()}",
+                    }
+                    for item in json
+                ],
+                request=httpx.Request("POST", "https://rpc.example"),
+            )
+
+        client.post.side_effect = response_for
+        calls = [
+            (
+                manager_address,
+                manager.functions.balanceOf(Web3.to_checksum_address(WALLET)),
+            )
+            for _ in range(RPC_BATCH_SIZE + 1)
+        ]
+
+        results = await _rpc_batch_calls(client, "https://rpc.example", calls)
+
+        self.assertEqual(client.post.await_count, 2)
+        self.assertEqual(len(results), RPC_BATCH_SIZE + 1)
 
     async def test_rejects_unsupported_chain(self):
         with self.assertRaises(HTTPException) as context:

@@ -27,6 +27,7 @@ class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
             "api.mainnet-beta.solana.com": "solana_rpc",
             "solana-rpc.publicnode.com": "solana_rpc",
             "ethereum-rpc.publicnode.com": "ethereum_rpc",
+            "bsc-dataseed.bnbchain.org": "bsc_rpc",
             "api.stakedao.org": "stakedao",
             "data-api.polymarket.com": "polymarket",
             "api-v2.pendle.finance": "pendle",

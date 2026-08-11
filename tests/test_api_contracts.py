@@ -9,6 +9,7 @@ from routers.gmx import GMX_CSV_HEADER
 from routers.jupiter import JUPITER_JLP_CSV_HEADER
 from routers.lido import LIDO_CSV_HEADER
 from routers.morpho import MORPHO_CSV_HEADER
+from routers.pancakeswap import PANCAKESWAP_CSV_HEADER
 from routers.pendle import PENDLE_CSV_HEADER
 from routers.polymarket import POLYMARKET_CSV_HEADER
 from routers.solana import (
@@ -42,6 +43,7 @@ PUBLISHED_VALUE_SOURCES = {
     "aave": ValueSource("/aave/positions.csv", "position_id"),
     "uniswap": ValueSource("/uniswap/positions.csv", "position_id"),
     "uniswap-v4": ValueSource("/uniswap/v4/positions.csv", "position_id"),
+    "pancakeswap": ValueSource("/pancakeswap/positions.csv", "position_id"),
     "stablecoins": ValueSource("/stablecoins/balances.csv", "balance_id"),
     "stakedao": ValueSource("/stakedao/positions.csv", "position_id"),
     "morpho": ValueSource("/morpho/positions.csv", "position_id"),
@@ -96,6 +98,7 @@ PUBLISHED_CSV_HEADERS = {
     "aave": AAVE_CSV_HEADER,
     "uniswap": UNISWAP_CSV_HEADER,
     "uniswap-v4": UNISWAP_V4_CSV_HEADER,
+    "pancakeswap": PANCAKESWAP_CSV_HEADER,
     "stablecoins": STABLECOIN_CSV_HEADER,
     "stakedao": STAKEDAO_CSV_HEADER,
     "morpho": MORPHO_CSV_HEADER,

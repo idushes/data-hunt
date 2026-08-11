@@ -34,6 +34,7 @@ from routers.lido import router as lido_router
 from routers.lighter import router as lighter_router
 from routers.morpho import router as morpho_router
 from routers.paradex import router as paradex_router
+from routers.pancakeswap import router as pancakeswap_router
 from routers.pendle import router as pendle_router
 from routers.polymarket import router as polymarket_router
 from routers.solana import router as solana_router
@@ -124,6 +125,7 @@ app.include_router(fluid_router)
 app.include_router(aave_router)
 app.include_router(uniswap_router)
 app.include_router(uniswap_v4_router)
+app.include_router(pancakeswap_router)
 app.include_router(stablecoins_router)
 app.include_router(stakedao_router)
 app.include_router(morpho_router)
