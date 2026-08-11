@@ -1,6 +1,7 @@
 import unittest
 
 from routers.aave import AAVE_CSV_HEADER
+from routers.bybit import BYBIT_CSV_HEADER
 from routers.coinbase import COINBASE_CSV_HEADER
 from routers.compound import COMPOUND_CSV_HEADER
 from routers.euler import EULER_CSV_HEADER
@@ -31,6 +32,7 @@ PUBLISHED_VALUE_SOURCES = {
     "lighter": ValueSource("/lighter/balance", "account_index"),
     "hyperliquid": ValueSource("/hyperliquid/balance", "account"),
     "coinbase": ValueSource("/coinbase/balance", "id"),
+    "bybit": ValueSource("/bybit/account.csv", "id"),
     "gmtrade-assets": ValueSource("/solana/gmtrade.csv", "mint"),
     "gmtrade-perps": ValueSource(
         "/solana/gmtrade-perps.csv", "position_address"
@@ -90,6 +92,7 @@ PUBLISHED_CSV_HEADERS = {
         "time",
     ],
     "coinbase": COINBASE_CSV_HEADER,
+    "bybit": BYBIT_CSV_HEADER,
     "gmtrade-assets": GMTRADE_CSV_HEADER,
     "gmtrade-perps": GMTRADE_PERP_CSV_HEADER,
     "kamino-vaults": KAMINO_CSV_HEADER,
@@ -169,6 +172,16 @@ class PublishedApiContractTest(unittest.TestCase):
         self.assertNotIn("key_name", parameter_names)
         self.assertNotIn("key_secret", parameter_names)
         self.assertIn("post", schema["paths"]["/coinbase/capsule"])
+
+    def test_bybit_uses_capsules_instead_of_raw_credentials(self):
+        schema = app.openapi()
+        parameters = schema["paths"]["/bybit/account.csv"]["get"]["parameters"]
+        parameter_names = {parameter["name"] for parameter in parameters}
+
+        self.assertIn("capsule", parameter_names)
+        self.assertNotIn("api_key", parameter_names)
+        self.assertNotIn("api_secret", parameter_names)
+        self.assertIn("post", schema["paths"]["/bybit/capsule"])
 
 
 if __name__ == "__main__":

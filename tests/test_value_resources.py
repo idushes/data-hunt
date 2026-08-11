@@ -183,6 +183,23 @@ class ValueResourcesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("must not be stored", response.json()["detail"])
 
+    def test_bybit_capsule_cannot_enter_the_resource_table(self):
+        response = self.client.post(
+            "/value-resources",
+            json={
+                "source": "bybit",
+                "key": "bybit:unified",
+                "column": "total_equity_usd",
+                "parameters": {
+                    "capsule": "dhb1.v1.encrypted",
+                    "region": "global",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("must not be stored", response.json()["detail"])
+
     def test_short_route_rejects_parameters_that_do_not_hold_credentials(self):
         resource_id = self._create_stable_resource()
 

@@ -106,6 +106,16 @@ COINBASE_CAPSULE_ACTIVE_KEY_ID=v2
 COINBASE_CAPSULE_KEYS_JSON={"v1":"<base64url-32-byte-key>","v2":"<base64url-32-byte-key>"}
 ```
 
+## Bybit account data
+
+`GET /bybit/account.csv?capsule=...` returns a Unified Account summary,
+non-zero asset balances, and open USDT/USDC linear and inverse derivative
+positions. Create the encrypted access key with `POST /bybit/capsule`; only
+Read-only Bybit keys are accepted. Raw credentials are validated and encrypted
+in memory, never persisted, and the capsule is stored only in the user's
+browser. Select `region` when the account uses a regional Bybit API endpoint.
+Responses use the shared 60-second CSV cache and a dedicated outbound queue.
+
 ## Short value resources
 
 `POST /value-resources` stores a credential-free description of one requested

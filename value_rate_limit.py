@@ -32,6 +32,7 @@ DATA_ACCESS_INTERNAL_HEADER = "x-datahunt-internal-token"
 DATA_ACCESS_INTERNAL_TOKEN = secrets.token_urlsafe(32)
 PROTECTED_DATA_PREFIXES = (
     "/aave",
+    "/bybit",
     "/cmc",
     "/coinbase",
     "/compound",

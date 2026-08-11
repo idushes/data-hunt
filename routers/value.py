@@ -31,6 +31,7 @@ VALUE_SOURCES = {
     "lighter": ValueSource("/lighter/balance", "account_index"),
     "hyperliquid": ValueSource("/hyperliquid/balance", "account"),
     "coinbase": ValueSource("/coinbase/balance", "id"),
+    "bybit": ValueSource("/bybit/account.csv", "id"),
     "gmtrade-assets": ValueSource("/solana/gmtrade.csv", "mint"),
     "gmtrade-perps": ValueSource("/solana/gmtrade-perps.csv", "position_address"),
     "kamino-vaults": ValueSource("/solana/kamino.csv", "vault_address"),
@@ -60,6 +61,7 @@ RESOURCE_PARAMETER_NAMES = {
     "coinbase": frozenset(
         {"capsule", "intx_capsule", "include_zero", "include_portfolios"}
     ),
+    "bybit": frozenset({"capsule", "region", "include_positions"}),
     "gmtrade-assets": frozenset({"wallet"}),
     "gmtrade-perps": frozenset({"wallet"}),
     "kamino-vaults": frozenset({"wallet"}),
@@ -85,6 +87,7 @@ RESOURCE_CREDENTIAL_PARAMS = {
     "paradex": frozenset({"token"}),
     "lighter": frozenset({"token"}),
     "coinbase": frozenset({"capsule", "intx_capsule"}),
+    "bybit": frozenset({"capsule"}),
 }
 RESOURCE_ID_MIN_BYTES = 9
 RESOURCE_ID_MAX_BYTES = 16
