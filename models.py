@@ -4,6 +4,7 @@ from sqlalchemy import (
     Column,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -65,6 +66,28 @@ class ValueResource(Base):
     column = Column(String(128), nullable=True)
     parameters = Column(JSON, nullable=False, default=dict)
     created_at = Column(Integer, nullable=False)
+
+
+class UsageDaily(Base):
+    __tablename__ = "usage_daily"
+    __table_args__ = (
+        UniqueConstraint(
+            "day",
+            "account_id",
+            "source",
+            "status_group",
+            name="uq_usage_daily_dimension",
+        ),
+        Index("ix_usage_daily_day_source", "day", "source"),
+        Index("ix_usage_daily_day_account", "day", "account_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    day = Column(Integer, nullable=False)
+    account_id = Column(String, nullable=False)
+    source = Column(String(64), nullable=False)
+    status_group = Column(String(16), nullable=False)
+    request_count = Column(Integer, nullable=False, default=1)
 
 
 class FeatureRequest(Base):

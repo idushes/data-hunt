@@ -17,6 +17,7 @@ from config import (
 from csv_cache import CSVCacheMiddleware
 from redis_client import close_redis_client
 from routers.aave import router as aave_router
+from routers.admin_analytics import router as admin_analytics_router
 from routers.auth import router as auth_router
 from routers.chains import router as chains_router
 from routers.cmc import router as cmc_router
@@ -129,6 +130,7 @@ app.include_router(jupiter_router)
 app.include_router(gmx_router)
 app.include_router(value_router)
 app.include_router(feature_requests_router)
+app.include_router(admin_analytics_router)
 
 app.include_router(auth_router)
 app.include_router(chains_router)

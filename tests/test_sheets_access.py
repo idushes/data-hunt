@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from config import ALGORITHM, SECRET_KEY
 from csv_cache import CSVCacheMiddleware
 from database import Base, get_db
-from models import Account, AccountAddress, AccountToken
+from models import Account, AccountAddress, AccountToken, UsageDaily
 from routers.auth import router as auth_router
 from security import create_access_token, create_sheets_access_token
 from value_rate_limit import (
@@ -166,6 +166,55 @@ class SheetsAccessTest(unittest.TestCase):
                     params={"auth_token": "not-a-token"},
                 )
                 self.assertEqual(invalid.status_code, 401)
+
+        with self.Session() as db:
+            usage = db.query(UsageDaily).all()
+            self.assertEqual(
+                sum(item.request_count for item in usage),
+                4,
+            )
+            self.assertEqual({item.account_id for item in usage}, {"account-one"})
+            self.assertEqual({item.source for item in usage}, {"short-value"})
+            self.assertEqual(
+                {item.status_group for item in usage},
+                {"success", "client_error"},
+            )
+
+    def test_tracks_resolved_short_value_source_without_sensitive_data(self):
+        app = FastAPI()
+        app.add_middleware(
+            ValueRateLimitMiddleware,
+            authenticated_limit=5,
+            window_seconds=60,
+            session_factory=self.Session,
+        )
+
+        @app.get("/v/{resource_id}")
+        async def value(resource_id: str):
+            return Response(
+                content=resource_id,
+                media_type="text/csv",
+                headers={"X-Value-Source": "uniswap"},
+            )
+
+        with patch("value_rate_limit.get_redis_client", return_value=None):
+            with TestClient(app) as client:
+                sheet_token = self._create_sheets_token("sheets-analytics")
+                response = client.get(
+                    "/v/AbCdEf123456",
+                    params={
+                        "auth_token": sheet_token,
+                        "capsule": "must-not-be-stored",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        with self.Session() as db:
+            usage = db.query(UsageDaily).one()
+            self.assertEqual(usage.account_id, "account-one")
+            self.assertEqual(usage.source, "uniswap")
+            self.assertEqual(usage.status_group, "success")
+            self.assertEqual(usage.request_count, 1)
 
     def test_protects_direct_data_routes_and_allows_internal_resolution(self):
         app = FastAPI()

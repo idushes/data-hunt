@@ -10,7 +10,9 @@ import jwt
 from fastapi import Request, Response, status
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from sqlalchemy.exc import IntegrityError
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.background import BackgroundTask, BackgroundTasks
 from starlette.responses import JSONResponse
 
 from config import (
@@ -20,7 +22,7 @@ from config import (
     VALUE_RATE_LIMIT_WINDOW_SECONDS,
 )
 from database import SessionLocal
-from models import AccountToken
+from models import AccountToken, UsageDaily
 from redis_client import get_redis_client
 
 
@@ -233,6 +235,100 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
             "X-RateLimit-Reset": str(rate.retry_after),
         }
 
+    @staticmethod
+    def _status_group(status_code: int) -> str:
+        if status_code < 400:
+            return "success"
+        if status_code < 500:
+            return "client_error"
+        return "server_error"
+
+    @staticmethod
+    def _usage_source(request: Request, response: Response | None = None) -> str:
+        if response is not None:
+            resolved = response.headers.get("x-value-source", "").strip()
+            if resolved:
+                return resolved[:64]
+        path = request.url.path.strip("/")
+        if path == "value":
+            return (request.query_params.get("source") or "value")[:64]
+        if path.startswith("v/"):
+            return "short-value"
+        if path == "value-resources":
+            return "resource-setup"
+        return (path.split("/", 1)[0] or "unknown")[:64]
+
+    def _record_usage(
+        self,
+        account_id: str,
+        source: str,
+        status_code: int,
+        timestamp: int,
+    ) -> None:
+        day = timestamp // 86400
+        status_group = self._status_group(status_code)
+        with self._session_factory() as db:
+            dimensions = (
+                UsageDaily.day == day,
+                UsageDaily.account_id == account_id,
+                UsageDaily.source == source,
+                UsageDaily.status_group == status_group,
+            )
+            updated = (
+                db.query(UsageDaily)
+                .filter(*dimensions)
+                .update(
+                    {UsageDaily.request_count: UsageDaily.request_count + 1},
+                    synchronize_session=False,
+                )
+            )
+            if updated:
+                db.commit()
+                return
+            db.add(
+                UsageDaily(
+                    day=day,
+                    account_id=account_id,
+                    source=source,
+                    status_group=status_group,
+                    request_count=1,
+                )
+            )
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                (
+                    db.query(UsageDaily)
+                    .filter(*dimensions)
+                    .update(
+                        {UsageDaily.request_count: UsageDaily.request_count + 1},
+                        synchronize_session=False,
+                    )
+                )
+                db.commit()
+
+    def _track_usage(
+        self,
+        response: Response,
+        request: Request,
+        account_id: str,
+    ) -> Response:
+        task = BackgroundTask(
+            self._record_usage,
+            account_id,
+            self._usage_source(request, response),
+            response.status_code,
+            int(time.time()),
+        )
+        if response.background is None:
+            response.background = task
+        elif isinstance(response.background, BackgroundTasks):
+            response.background.tasks.append(task)
+        else:
+            response.background = BackgroundTasks([response.background, task])
+        return response
+
     async def dispatch(
         self,
         request: Request,
@@ -269,17 +365,18 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
         headers = self._headers(rate)
         if rate.exceeded:
             headers["Retry-After"] = str(rate.retry_after)
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={
                     "detail": "Rate limit exceeded. Try again later."
                 },
                 headers=headers,
             )
+            return self._track_usage(response, request, account_id)
 
         response = await call_next(request)
         for name, value in headers.items():
             response.headers[name] = value
         if request.method.upper() == "GET" and response.status_code < 400:
             response.headers["Cache-Control"] = "private, max-age=60"
-        return response
+        return self._track_usage(response, request, account_id)

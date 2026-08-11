@@ -11,6 +11,11 @@ Example:
 FEATURE_REQUEST_ADMIN_ADDRESSES=0x1234...,0xabcd...
 ```
 
+The same admin wallet list protects `GET /admin/analytics`. Usage analytics
+store only daily request counts grouped by internal account ID, source, and
+response class. Wallet addresses, IP addresses, query parameters, formulas,
+and credentials are not stored in analytics.
+
 ## Redis cache and outbound queues
 
 `REDIS_URL` enables the shared CSV cache, distributed single-flight, and
