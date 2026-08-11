@@ -47,6 +47,7 @@ VALUE_SOURCES = {
     "jupiter-jlp": ValueSource("/jupiter/jlp.csv", "position_id"),
     "gmx": ValueSource("/gmx/positions.csv", "position_id"),
     "polymarket": ValueSource("/polymarket/positions.csv", "position_id"),
+    "pendle": ValueSource("/pendle/positions.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column", "auth_token"}
 DIRECT_VALUE_SOURCES = {"cmc-price": "/cmc/price.csv"}
@@ -73,6 +74,7 @@ RESOURCE_PARAMETER_NAMES = {
     "jupiter-jlp": frozenset({"wallet"}),
     "gmx": frozenset({"address", "chain_id"}),
     "polymarket": frozenset({"address", "size_threshold"}),
+    "pendle": frozenset({"address", "include_closed"}),
     "cmc-price": frozenset({"symbol", "id", "convert"}),
 }
 RESOURCE_CREDENTIAL_PARAMS = {

@@ -50,6 +50,17 @@ pass `size_threshold=0` to include dust. The portfolio summary remains the full
 value. Responses use the shared 60-second CSV cache and the dedicated Polymarket
 outbound queue.
 
+## Pendle positions
+
+`GET /pendle/positions.csv?address=0x...` reads Pendle's public cross-chain
+portfolio endpoint and returns a stable `{wallet}:portfolio` summary followed
+by PT, YT, LP, cross-chain PT, SY, and claimable-reward rows. Position values
+are in USD; token balances and claimable amounts remain in the raw integer units
+returned by Pendle. Pass `include_closed=true` to include closed markets. Pendle
+may cache claimable reward amounts for up to 24 hours. No Pendle API key is
+required. Responses use the shared 60-second CSV cache and a dedicated outbound
+queue configured below Pendle's published free-tier limit.
+
 ## Multi-wallet stablecoin balances
 
 `GET /stablecoins/balances.csv` accepts up to 20 wallets per request across

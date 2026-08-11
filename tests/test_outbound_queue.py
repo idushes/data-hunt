@@ -29,6 +29,7 @@ class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
             "ethereum-rpc.publicnode.com": "ethereum_rpc",
             "api.stakedao.org": "stakedao",
             "data-api.polymarket.com": "polymarket",
+            "api-v2.pendle.finance": "pendle",
         }
         for host, provider in expected.items():
             with self.subTest(host=host):

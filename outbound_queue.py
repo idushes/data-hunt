@@ -74,6 +74,7 @@ DEFAULT_POLICIES = (
     ProviderPolicy("lido", ("eth-api.lido.fi",), 3, 1, 2),
     ProviderPolicy("jupiter_perps", ("perps-api.jup.ag",), 3, 1, 2),
     ProviderPolicy("polymarket", ("data-api.polymarket.com",), 100, 10, 8),
+    ProviderPolicy("pendle", ("api-v2.pendle.finance",), 10, 60, 2),
     ProviderPolicy("trongrid", ("api.trongrid.io",), 2, 1, 2),
     ProviderPolicy(
         "gmx",
