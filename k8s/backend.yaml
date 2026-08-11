@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: data-hunt
-          image: dushes/data-hunt@sha256:a1b6f4f71f079bf886253cf0cfada5b23384e6b259fde30b343259d8b3a9c3e0
+          image: dushes/data-hunt@sha256:fe579df80d0345be4da0618852624a99450a3a61c3407ccd59a657426fdbb41d
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -125,6 +125,13 @@ spec:
       http:
         paths:
           - path: /aave
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /bybit
             pathType: Prefix
             backend:
               service:
