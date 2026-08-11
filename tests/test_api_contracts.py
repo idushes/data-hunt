@@ -9,6 +9,7 @@ from routers.gmx import GMX_CSV_HEADER
 from routers.jupiter import JUPITER_JLP_CSV_HEADER
 from routers.lido import LIDO_CSV_HEADER
 from routers.morpho import MORPHO_CSV_HEADER
+from routers.polymarket import POLYMARKET_CSV_HEADER
 from routers.solana import (
     GMTRADE_CSV_HEADER,
     GMTRADE_PERP_CSV_HEADER,
@@ -46,6 +47,7 @@ PUBLISHED_VALUE_SOURCES = {
     "lido": ValueSource("/lido/positions.csv", "position_id"),
     "jupiter-jlp": ValueSource("/jupiter/jlp.csv", "position_id"),
     "gmx": ValueSource("/gmx/positions.csv", "position_id"),
+    "polymarket": ValueSource("/polymarket/positions.csv", "position_id"),
 }
 
 PUBLISHED_CSV_HEADERS = {
@@ -97,6 +99,7 @@ PUBLISHED_CSV_HEADERS = {
     "lido": LIDO_CSV_HEADER,
     "jupiter-jlp": JUPITER_JLP_CSV_HEADER,
     "gmx": GMX_CSV_HEADER,
+    "polymarket": POLYMARKET_CSV_HEADER,
 }
 
 

@@ -46,6 +46,7 @@ VALUE_SOURCES = {
     "lido": ValueSource("/lido/positions.csv", "position_id"),
     "jupiter-jlp": ValueSource("/jupiter/jlp.csv", "position_id"),
     "gmx": ValueSource("/gmx/positions.csv", "position_id"),
+    "polymarket": ValueSource("/polymarket/positions.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column", "auth_token"}
 DIRECT_VALUE_SOURCES = {"cmc-price": "/cmc/price.csv"}
@@ -71,6 +72,7 @@ RESOURCE_PARAMETER_NAMES = {
     "lido": frozenset({"address"}),
     "jupiter-jlp": frozenset({"wallet"}),
     "gmx": frozenset({"address", "chain_id"}),
+    "polymarket": frozenset({"address", "size_threshold"}),
     "cmc-price": frozenset({"symbol", "id", "convert"}),
 }
 RESOURCE_CREDENTIAL_PARAMS = {

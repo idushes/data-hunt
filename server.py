@@ -34,6 +34,7 @@ from routers.lido import router as lido_router
 from routers.lighter import router as lighter_router
 from routers.morpho import router as morpho_router
 from routers.paradex import router as paradex_router
+from routers.polymarket import router as polymarket_router
 from routers.solana import router as solana_router
 from routers.stablecoins import router as stablecoins_router
 from routers.stakedao import router as stakedao_router
@@ -128,6 +129,7 @@ app.include_router(euler_router)
 app.include_router(lido_router)
 app.include_router(jupiter_router)
 app.include_router(gmx_router)
+app.include_router(polymarket_router)
 app.include_router(value_router)
 app.include_router(feature_requests_router)
 app.include_router(admin_analytics_router)

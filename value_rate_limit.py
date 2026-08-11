@@ -44,6 +44,7 @@ PROTECTED_DATA_PREFIXES = (
     "/lighter",
     "/morpho",
     "/paradex",
+    "/polymarket",
     "/solana",
     "/stablecoins",
     "/stakedao",
