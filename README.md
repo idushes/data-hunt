@@ -34,7 +34,10 @@ OUTBOUND_API_LIMITS_JSON={"coinbase":{"requests":5,"period_seconds":1,"concurren
 `GET /stablecoins/balances.csv` accepts up to 20 wallets per request across
 EVM, Solana, and TRON. Pass multiple wallets in `address`, `wallet`, or
 `tron_address` as comma-separated values. Duplicate addresses are removed
-before the queued RPC requests are created.
+before the queued RPC requests are created. USDC and USDT remain the first
+rows for backward compatibility, followed by up to 15 high-volume USD
+stablecoins available on the selected network. The list is a fixed snapshot so
+symbols, balance IDs, and short resource links do not change with market rank.
 
 ## Coinbase credential capsules
 

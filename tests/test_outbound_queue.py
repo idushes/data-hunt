@@ -25,6 +25,7 @@ class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
             "api.v3.aave.com": "aave_v3",
             "api.v4.aave.com": "aave_v4",
             "api.mainnet-beta.solana.com": "solana_rpc",
+            "solana-rpc.publicnode.com": "solana_rpc",
             "ethereum-rpc.publicnode.com": "ethereum_rpc",
             "api.stakedao.org": "stakedao",
         }

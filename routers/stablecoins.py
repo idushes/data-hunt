@@ -13,7 +13,12 @@ from fastapi.responses import Response
 
 from outbound_queue import queued_async_client
 
-from routers.solana import SOLANA_RPC_ENDPOINT, _is_solana_address, _solana_rpc_request
+from routers.solana import (
+    SPL_TOKEN_2022_PROGRAM_ID,
+    SPL_TOKEN_PROGRAM_ID,
+    _is_solana_address,
+    _solana_rpc_request,
+)
 
 
 STABLECOINS_CACHE_TTL_SECONDS = 60
@@ -21,6 +26,7 @@ MAX_WALLETS_PER_REQUEST = 20
 ETHEREUM_RPC_ENDPOINT = "https://ethereum-rpc.publicnode.com"
 ARBITRUM_RPC_ENDPOINT = "https://arbitrum-one-rpc.publicnode.com"
 BASE_RPC_ENDPOINT = "https://base-rpc.publicnode.com"
+STABLECOINS_SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
 BALANCE_OF_SELECTOR = "70a08231"
 STABLECOIN_CSV_HEADER = [
     "balance_id",
@@ -33,6 +39,22 @@ STABLECOIN_CSV_HEADER = [
     "balance",
     "decimals",
 ]
+
+
+def _token(
+    symbol: str, name: str, address: str, decimals: int
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "name": name,
+        "address": address,
+        "decimals": decimals,
+    }
+
+
+# USDC and USDT stay first to preserve legacy row-based formulas. Additional
+# USD stablecoins are a fixed, per-network snapshot of 24-hour market volume
+# published on 2026-08-11. Symbols are unique because they form balance IDs.
 ETHEREUM_TOKENS = (
     {
         "symbol": "USDC",
@@ -46,6 +68,21 @@ ETHEREUM_TOKENS = (
         "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
         "decimals": 6,
     },
+    _token("USD1", "USD1", "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d", 18),
+    _token("USDG", "Global Dollar", "0xe343167631d89b6ffc58b88d6b7fb0228795491d", 6),
+    _token("USDS", "USDS", "0xdc035d45d973e3ec169d2276ddab16f1e407384f", 18),
+    _token("PYUSD", "PayPal USD", "0x6c3ea9036406852006290770bedfcaba0e23a0e8", 6),
+    _token("USDD", "USDD", "0x4f8e5de400de08b164e7421b3ee387f461becd1a", 18),
+    _token("DAI", "Dai", "0x6b175474e89094c44da98b954eedeac495271d0f", 18),
+    _token("FDUSD", "First Digital USD", "0xc5f0f7b66764f6ec8c8dff7ba683102295e16409", 18),
+    _token("U", "United Stables", "0xce24439f2d9c6a2289f741120fe202248b666666", 18),
+    _token("RLUSD", "Ripple USD", "0x8292bb45bf1ee4d140127049757c2e0ff06317ed", 18),
+    _token("USDE", "Ethena USDe", "0x4c9edd5852cd905f086c759e8383e09bff1e68b3", 18),
+    _token("TUSD", "TrueUSD", "0x0000000000085d4780b73119b644ae5ecd22b376", 18),
+    _token("USDP", "Pax Dollar", "0x8e870d67f660d95d5be530380d0ec0bd388289e1", 18),
+    _token("REUSD", "Re Protocol reUSD", "0x5086bf358635b81d8c47c66d1c8b9e567db70c72", 18),
+    _token("C1USD", "Currency One USD", "0x40caa7912437002ee2c8415d43e7f575c733674c", 18),
+    _token("XUSD", "StraitsX XUSD", "0xc08e7e23c235073c6807c2efe7021304cb7c2815", 6),
 )
 ARBITRUM_TOKENS = (
     {
@@ -60,6 +97,19 @@ ARBITRUM_TOKENS = (
         "address": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
         "decimals": 6,
     },
+    _token("USDS", "USDS", "0x6491c05a82219b8d1479057361ff1654749b876b", 18),
+    _token("PYUSD", "PayPal USD", "0x46850ad61c2b7d64d08c9c754f45254596696984", 6),
+    _token("FDUSD", "First Digital USD", "0x93c9932e4afa59201f0b5e63f7d816516f1669fe", 18),
+    _token("USDE", "Ethena USDe", "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18),
+    _token("REUSD", "Re Protocol reUSD", "0x76ce01f0ef25aa66cc5f1e546a005e4a63b25609", 18),
+    _token("CRVUSD", "crvUSD", "0x498bf2b1e120fed3ad3d42ea2165e9b73f99c1e5", 18),
+    _token("AUSD", "AUSD", "0x00000000efe302beaa2b3e6e1b18d08d69a9012a", 6),
+    _token("FRXUSD", "Frax USD", "0x80eede496655fb9047dd39d9f418d5483ed600df", 18),
+    _token("GHO", "GHO", "0x7dff72693f6a4149b17e7c6314655f6a9f7c8b33", 18),
+    _token("EUSD", "Electronic USD", "0x12275dcb9048680c4be40942ea4d92c74c63b844", 18),
+    _token("DOLA", "DOLA", "0x6a7661795c374c0bfc635934efaddff3a7ee23b6", 18),
+    _token("FRAX", "Legacy Frax Dollar", "0x17fc002b466eec40dae837fc4be5c67993ddbd6f", 18),
+    _token("USD0", "Usual USD", "0x35f1c5cb7fb977e669fd244c567da99d8a3a6850", 18),
 )
 BASE_TOKENS = (
     {
@@ -74,6 +124,20 @@ BASE_TOKENS = (
         "address": "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2",
         "decimals": 6,
     },
+    _token("USDS", "USDS", "0x820c137fa70c8691f0e44dc420a5e53c168921dc", 18),
+    _token("USDE", "Ethena USDe", "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34", 18),
+    _token("REUSD", "Re Protocol reUSD", "0x7d214438d0f27afccc23b3d1e1a53906ace5cfea", 18),
+    _token("CRVUSD", "crvUSD", "0x417ac0e078398c154edfadd9ef675d30be60af93", 18),
+    _token("AUSD", "AUSD", "0x00000000efe302beaa2b3e6e1b18d08d69a9012a", 6),
+    _token("APXUSD", "apxUSD", "0xd993935e13851dd7517af10687ec7e5022127228", 18),
+    _token("FXUSD", "f(x) Protocol fxUSD", "0x55380fe7a1910dff29a47b622057ab4139da42c5", 18),
+    _token("FRXUSD", "Frax USD", "0xe5020a6d073a794b6e7f05678707de47986fb0b6", 18),
+    _token("GHO", "GHO", "0x6bb7a212910682dcfdbd5bcbb3e28fb4e8da10ee", 18),
+    _token("EUSD", "Electronic USD", "0xcfa3ef56d303ae4faaba0592388f19d7c3399fb4", 18),
+    _token("DOLA", "DOLA", "0x4621b7a9c75199271f773ebd9a499dbd165c3191", 18),
+    _token("MUSD", "Mezo USD", "0xdd468a1ddc392dcdbef6db6e34e89aa338f9f186", 18),
+    _token("USD0", "Usual USD", "0x758a3e0b1f842c9306b783f8a4078c6c8c03a270", 18),
+    _token("BOLD", "BOLD", "0x03569cc076654f82679c4ba2124d64774781b01d", 18),
 )
 EVM_CHAINS = {
     1: {
@@ -108,6 +172,21 @@ SOLANA_TOKENS = (
         "address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
         "decimals": 6,
     },
+    _token("USD1", "USD1", "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB", 6),
+    _token("USDG", "Global Dollar", "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", 6),
+    _token("USDS", "USDS", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", 6),
+    _token("PYUSD", "PayPal USD", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", 6),
+    _token("FDUSD", "First Digital USD", "9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u", 6),
+    _token("USDE", "Ethena USDe", "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT", 9),
+    _token("USDGO", "USDGO", "72puLt71H93Z9CzHuBRTwFpL4TG3WZUhnoCC7p8gxigu", 6),
+    _token("JUPUSD", "JupUSD", "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD", 6),
+    _token("USDP", "Pax Dollar", "HVbpJAQGNpkgBaYBZQBR1t7yFdvaYVp2vCQQfKKEN4tM", 6),
+    _token("REUSD", "Re Protocol reUSD", "2uxaYT1fVrp6Fg2BrxQcyKSW91hefM6dG9krpbeDiirT", 9),
+    _token("XUSD", "StraitsX XUSD", "4UbvZiomFvXDnZSz6vdHiDNiHozH2ykTEqjhhbVHiv9z", 6),
+    _token("USDCV", "USD CoinVertible", "8smindLdDuySY6i2bStQX9o8DVhALCXCMbNxD98unx35", 2),
+    _token("CASH", "CASH", "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", 6),
+    _token("AUSD", "AUSD", "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9", 6),
+    _token("SOFID", "SoFiUSD", "APhcqtzE73es3KAGiVksZFMLGwJDiAey5qZKUrQHEHfS", 6),
 )
 TRON_API_URL = "https://api.trongrid.io"
 TRON_TOKENS = (
@@ -123,6 +202,10 @@ TRON_TOKENS = (
         "address": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8",
         "decimals": 6,
     },
+    _token("USD1", "USD1", "TPFqcBAaaUMCSVRCqPaQ9QnzKhmuoLR6Rc", 18),
+    _token("USDD", "USDD", "TXDk8mbtRbXeYuMNS83CfKPaYYT8XWv9Hz", 18),
+    _token("U", "United Stables", "TFNirp6PbqYE1ZTtWuCMUKJWLNZkoCoeFJ", 18),
+    _token("TUSD", "TrueUSD", "TUpMhErZL2fhh4sVNULAbNKLokS4GjC1F4", 18),
 )
 
 router = APIRouter(prefix="/stablecoins", tags=["stablecoins"])
@@ -307,48 +390,88 @@ def _sum_solana_token_accounts(result: Any, expected_decimals: int) -> int:
     return total
 
 
-async def _fetch_solana_token_balance(
-    client: httpx.AsyncClient,
-    wallet: str,
-    token: dict[str, Any],
-    rpc_url: str,
-) -> dict[str, str]:
-    result = await _solana_rpc_request(
-        client,
-        "getTokenAccountsByOwner",
-        [
-            wallet,
-            {"mint": token["address"]},
-            {"encoding": "jsonParsed", "commitment": "confirmed"},
-        ],
-        endpoint=rpc_url,
-    )
-    raw_amount = _sum_solana_token_accounts(result, token["decimals"])
-    return {
-        "balance_id": f"solana:mainnet:{wallet}:{token['symbol']}",
-        "wallet": wallet,
-        "network": "Solana",
-        "chain_id": "solana-mainnet",
-        "token_symbol": token["symbol"],
-        "token_name": token["name"],
-        "token_address": token["address"],
-        "balance": _format_balance(raw_amount, token["decimals"]),
-        "decimals": str(token["decimals"]),
+def _sum_solana_balances_by_mint(
+    results: tuple[Any, ...], tokens: tuple[dict[str, Any], ...]
+) -> dict[str, int]:
+    decimals_by_mint = {
+        token["address"]: token["decimals"] for token in tokens
     }
+    totals = {mint: 0 for mint in decimals_by_mint}
+    for result in results:
+        values = result.get("value") if isinstance(result, dict) else None
+        if not isinstance(values, list):
+            raise HTTPException(
+                status_code=502,
+                detail="Solana RPC returned invalid token accounts",
+            )
+        for item in values:
+            account = item.get("account") if isinstance(item, dict) else None
+            data = account.get("data") if isinstance(account, dict) else None
+            parsed = data.get("parsed") if isinstance(data, dict) else None
+            info = parsed.get("info") if isinstance(parsed, dict) else None
+            token_amount = info.get("tokenAmount") if isinstance(info, dict) else None
+            mint = info.get("mint") if isinstance(info, dict) else None
+            if mint not in decimals_by_mint or not isinstance(token_amount, dict):
+                continue
+            amount = token_amount.get("amount")
+            decimals = token_amount.get("decimals")
+            if not isinstance(amount, str) or decimals != decimals_by_mint[mint]:
+                continue
+            try:
+                totals[mint] += int(amount)
+            except ValueError:
+                continue
+    return totals
 
 
 async def _fetch_solana_balances(
     client: httpx.AsyncClient, wallet: str
 ) -> list[dict[str, str]]:
-    rpc_url = os.getenv("STABLECOINS_SOLANA_RPC_URL") or SOLANA_RPC_ENDPOINT
-    return list(
-        await asyncio.gather(
-            *(
-                _fetch_solana_token_balance(client, wallet, token, rpc_url)
-                for token in SOLANA_TOKENS
-            )
-        )
+    rpc_url = (
+        os.getenv("STABLECOINS_SOLANA_RPC_URL")
+        or STABLECOINS_SOLANA_RPC_ENDPOINT
     )
+    token_result, token_2022_result = await asyncio.gather(
+        _solana_rpc_request(
+            client,
+            "getTokenAccountsByOwner",
+            [
+                wallet,
+                {"programId": SPL_TOKEN_PROGRAM_ID},
+                {"encoding": "jsonParsed", "commitment": "confirmed"},
+            ],
+            endpoint=rpc_url,
+        ),
+        _solana_rpc_request(
+            client,
+            "getTokenAccountsByOwner",
+            [
+                wallet,
+                {"programId": SPL_TOKEN_2022_PROGRAM_ID},
+                {"encoding": "jsonParsed", "commitment": "confirmed"},
+            ],
+            endpoint=rpc_url,
+        ),
+    )
+    amounts_by_mint = _sum_solana_balances_by_mint(
+        (token_result, token_2022_result), SOLANA_TOKENS
+    )
+    return [
+        {
+            "balance_id": f"solana:mainnet:{wallet}:{token['symbol']}",
+            "wallet": wallet,
+            "network": "Solana",
+            "chain_id": "solana-mainnet",
+            "token_symbol": token["symbol"],
+            "token_name": token["name"],
+            "token_address": token["address"],
+            "balance": _format_balance(
+                amounts_by_mint[token["address"]], token["decimals"]
+            ),
+            "decimals": str(token["decimals"]),
+        }
+        for token in SOLANA_TOKENS
+    ]
 
 
 async def _fetch_tron_balances(
@@ -442,11 +565,11 @@ def _render_csv(rows: list[dict[str, str]]) -> str:
 
 @router.get(
     "/balances.csv",
-    summary="Export EVM, Solana, and TRON USDC/USDT balances",
+    summary="Export popular EVM, Solana, and TRON stablecoin balances",
     description=(
-        "Returns stablecoin balance rows for one or more EVM, Solana, and "
-        "TRON wallets. Pass multiple wallets as comma-separated values. "
-        "Zero balances are included."
+        "Returns USDC, USDT, and up to 15 additional high-volume USD "
+        "stablecoin balance rows available on each network. Pass multiple "
+        "wallets as comma-separated values. Zero balances are included."
     ),
     responses={200: {"content": {"text/csv": {}}}},
 )

@@ -18,7 +18,7 @@ from outbound_queue import queued_async_client
 GRAPHQL_ENDPOINT = "https://gmx-solana-sqd.squids.live/gmx-solana-base:prod/api/graphql"
 SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
 SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-SPL_TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPYg4GNiiAaA6VTxPBJW"
+SPL_TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 KAMINO_API_ENDPOINT = "https://api.kamino.finance"
 KAMINO_RESOURCES_ENDPOINT = "https://cdn.kamino.com/resources.json"
 KAMINO_SOLANA_RPC_ENDPOINT = (

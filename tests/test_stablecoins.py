@@ -10,9 +10,11 @@ from routers.stablecoins import (
     ETHEREUM_TOKENS,
     ARBITRUM_TOKENS,
     BASE_TOKENS,
+    SOLANA_TOKENS,
     TRON_TOKENS,
     _fetch_evm_balances,
     _fetch_ethereum_balances,
+    _fetch_solana_balances,
     _fetch_stablecoin_rows,
     _fetch_tron_balances,
     _format_balance,
@@ -22,6 +24,7 @@ from routers.stablecoins import (
     _sum_solana_token_accounts,
     get_stablecoin_balances_csv,
 )
+from routers.solana import SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID
 
 
 EVM_WALLET = "0x6272ab4f91e0df14acb6a2a311d817381210e339"
@@ -29,6 +32,27 @@ SOLANA_WALLET = "11111111111111111111111111111111"
 
 
 class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
+    def test_exposes_only_unique_stablecoins_in_a_stable_order(self):
+        expected = (
+            (ETHEREUM_TOKENS, 17, ("USDC", "USDT")),
+            (ARBITRUM_TOKENS, 15, ("USDC", "USDT")),
+            (BASE_TOKENS, 16, ("USDC", "USDT")),
+            (SOLANA_TOKENS, 17, ("USDC", "USDT")),
+            (TRON_TOKENS, 6, ("USDT", "USDC")),
+        )
+        for tokens, count, leading_symbols in expected:
+            symbols = tuple(token["symbol"] for token in tokens)
+            self.assertEqual(len(tokens), count)
+            self.assertEqual(symbols[:2], leading_symbols)
+            self.assertEqual(len(symbols), len(set(symbols)))
+            self.assertTrue(all(token["address"] for token in tokens))
+
+    def test_uses_the_canonical_solana_token_2022_program(self):
+        self.assertEqual(
+            SPL_TOKEN_2022_PROGRAM_ID,
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+        )
+
     def test_formats_six_decimal_balances(self):
         self.assertEqual(_format_balance(1_234_567, 6), "1.234567")
         self.assertEqual(_format_balance(0, 6), "0")
@@ -73,8 +97,12 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
         response = httpx.Response(
             200,
             json=[
-                {"jsonrpc": "2.0", "id": 0, "result": hex(12_345_678)},
-                {"jsonrpc": "2.0", "id": 1, "result": "0x0"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": index,
+                    "result": hex(12_345_678) if index == 0 else "0x0",
+                }
+                for index in range(len(ETHEREUM_TOKENS))
             ],
             request=httpx.Request("POST", "https://rpc.example"),
         )
@@ -95,8 +123,12 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
         response = httpx.Response(
             200,
             json=[
-                {"jsonrpc": "2.0", "id": 0, "result": hex(1_000_000)},
-                {"jsonrpc": "2.0", "id": 1, "result": "0x0"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": index,
+                    "result": hex(1_000_000) if index == 0 else "0x0",
+                }
+                for index in range(len(ARBITRUM_TOKENS))
             ],
             request=httpx.Request("POST", "https://rpc.example"),
         )
@@ -115,8 +147,16 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
         response = httpx.Response(
             200,
             json=[
-                {"jsonrpc": "2.0", "id": 0, "result": hex(2_000_000)},
-                {"jsonrpc": "2.0", "id": 1, "result": hex(3_000_000)},
+                {
+                    "jsonrpc": "2.0",
+                    "id": index,
+                    "result": (
+                        hex(2_000_000)
+                        if index == 0
+                        else hex(3_000_000) if index == 1 else "0x0"
+                    ),
+                }
+                for index in range(len(BASE_TOKENS))
             ],
             request=httpx.Request("POST", "https://rpc.example"),
         )
@@ -129,6 +169,54 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["network"], "Base")
         self.assertEqual(rows[0]["balance"], "2")
         self.assertEqual(rows[1]["balance"], "3")
+
+    async def test_reads_all_solana_balances_in_two_rpc_requests(self):
+        def token_account(mint: str, amount: str, decimals: int):
+            return {
+                "account": {
+                    "data": {
+                        "parsed": {
+                            "info": {
+                                "mint": mint,
+                                "tokenAmount": {
+                                    "amount": amount,
+                                    "decimals": decimals,
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+
+        rpc = AsyncMock(
+            side_effect=[
+                {
+                    "value": [
+                        token_account(SOLANA_TOKENS[0]["address"], "2500000", 6)
+                    ]
+                },
+                {
+                    "value": [
+                        token_account(SOLANA_TOKENS[2]["address"], "4000000", 6)
+                    ]
+                },
+            ]
+        )
+        with patch("routers.stablecoins._solana_rpc_request", rpc):
+            rows = await _fetch_solana_balances(AsyncMock(), SOLANA_WALLET)
+
+        self.assertEqual(rpc.await_count, 2)
+        self.assertEqual(len(rows), len(SOLANA_TOKENS))
+        self.assertEqual(rows[0]["balance"], "2.5")
+        self.assertEqual(rows[1]["balance"], "0")
+        self.assertEqual(rows[2]["balance"], "4")
+        program_ids = {
+            call.args[2][1]["programId"] for call in rpc.await_args_list
+        }
+        self.assertEqual(
+            program_ids,
+            {SPL_TOKEN_PROGRAM_ID, SPL_TOKEN_2022_PROGRAM_ID},
+        )
 
     async def test_requires_at_least_one_wallet(self):
         with self.assertRaises(HTTPException) as context:
@@ -196,8 +284,10 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         client.get.assert_awaited_once()
+        self.assertEqual(len(rows), len(TRON_TOKENS))
         self.assertEqual(rows[0]["balance"], "12.5")
         self.assertEqual(rows[1]["balance"], "3")
+        self.assertEqual(rows[2]["balance"], "0")
         self.assertEqual(rows[0]["network"], "TRON")
 
     async def test_fetches_both_networks_and_keeps_zero_rows(self):
