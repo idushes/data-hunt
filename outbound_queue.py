@@ -65,7 +65,17 @@ DEFAULT_POLICIES = (
     ProviderPolicy("gmtrade_api", ("gmtrade-web-backend.gmtrade.xyz",), 3, 1, 3),
     ProviderPolicy("gmx_squid", ("gmx-solana-sqd.squids.live",), 3, 1, 3),
     ProviderPolicy("stakedao", ("api.stakedao.org",), 3, 1, 2),
-    ProviderPolicy("blockscout", ("eth.blockscout.com",), 3, 1, 2),
+    ProviderPolicy(
+        "blockscout",
+        (
+            "eth.blockscout.com",
+            "arbitrum.blockscout.com",
+            "base.blockscout.com",
+        ),
+        3,
+        1,
+        2,
+    ),
     ProviderPolicy("curve", ("api.curve.finance",), 2, 1, 2),
     ProviderPolicy("morpho", ("api.morpho.org",), 3, 1, 2),
     ProviderPolicy("base_rpc", ("base-rpc.publicnode.com",), 4, 1, 4),

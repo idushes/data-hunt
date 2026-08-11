@@ -40,6 +40,7 @@ from routers.solana import router as solana_router
 from routers.stablecoins import router as stablecoins_router
 from routers.stakedao import router as stakedao_router
 from routers.uniswap import router as uniswap_router
+from routers.uniswap_v4 import router as uniswap_v4_router
 from routers.value import router as value_router
 from utils import load_chains
 from value_rate_limit import ValueRateLimitMiddleware
@@ -122,6 +123,7 @@ app.include_router(solana_router)
 app.include_router(fluid_router)
 app.include_router(aave_router)
 app.include_router(uniswap_router)
+app.include_router(uniswap_v4_router)
 app.include_router(stablecoins_router)
 app.include_router(stakedao_router)
 app.include_router(morpho_router)

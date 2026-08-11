@@ -20,6 +20,7 @@ from routers.solana import (
 from routers.stablecoins import STABLECOIN_CSV_HEADER
 from routers.stakedao import STAKEDAO_CSV_HEADER
 from routers.uniswap import UNISWAP_CSV_HEADER
+from routers.uniswap_v4 import UNISWAP_V4_CSV_HEADER
 from routers.value import VALUE_SOURCES, ValueSource
 from server import app
 
@@ -40,6 +41,7 @@ PUBLISHED_VALUE_SOURCES = {
     "fluid": ValueSource("/fluid/positions.csv", "position_id"),
     "aave": ValueSource("/aave/positions.csv", "position_id"),
     "uniswap": ValueSource("/uniswap/positions.csv", "position_id"),
+    "uniswap-v4": ValueSource("/uniswap/v4/positions.csv", "position_id"),
     "stablecoins": ValueSource("/stablecoins/balances.csv", "balance_id"),
     "stakedao": ValueSource("/stakedao/positions.csv", "position_id"),
     "morpho": ValueSource("/morpho/positions.csv", "position_id"),
@@ -93,6 +95,7 @@ PUBLISHED_CSV_HEADERS = {
     "fluid": FLUID_CSV_HEADER,
     "aave": AAVE_CSV_HEADER,
     "uniswap": UNISWAP_CSV_HEADER,
+    "uniswap-v4": UNISWAP_V4_CSV_HEADER,
     "stablecoins": STABLECOIN_CSV_HEADER,
     "stakedao": STAKEDAO_CSV_HEADER,
     "morpho": MORPHO_CSV_HEADER,

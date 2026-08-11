@@ -11,6 +11,7 @@ from fastapi.responses import Response
 
 from outbound_queue import queued_async_client
 from web3 import Web3
+from web3._utils.abi import collapse_if_tuple
 
 
 UNISWAP_CACHE_TTL_SECONDS = 60
@@ -353,7 +354,9 @@ async def _rpc_batch_calls(
         if not isinstance(result, str) or not result.startswith("0x"):
             decoded.append(None)
             continue
-        output_types = [output["type"] for output in function.abi.get("outputs", [])]
+        output_types = [
+            collapse_if_tuple(output) for output in function.abi.get("outputs", [])
+        ]
         try:
             decoded.append(codec.decode(output_types, bytes.fromhex(result[2:])))
         except Exception:

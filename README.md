@@ -61,6 +61,17 @@ may cache claimable reward amounts for up to 24 hours. No Pendle API key is
 required. Responses use the shared 60-second CSV cache and a dedicated outbound
 queue configured below Pendle's published free-tier limit.
 
+## Uniswap V4 positions
+
+`GET /uniswap/v4/positions.csv?address=0x...&chain_id=1` returns owned
+Uniswap V4 NFT positions on Ethereum, Base, or Arbitrum. The export includes
+token amounts, range status, pool and hook identifiers, USD value when one side
+is a known stablecoin, and claimable fees calculated directly from V4
+PoolManager state. Position discovery uses the public Blockscout NFT index and
+ownership is verified onchain. Pass `include_closed=true` to include NFT
+positions whose liquidity is zero. Responses use the shared 60-second CSV
+cache and the existing per-provider RPC and Blockscout queues.
+
 ## Multi-wallet stablecoin balances
 
 `GET /stablecoins/balances.csv` accepts up to 20 wallets per request across
