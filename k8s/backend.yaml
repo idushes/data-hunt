@@ -122,6 +122,20 @@ spec:
     - host: hunt.data.lisacorp.com
       http:
         paths:
+          - path: /aave
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /cmc
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
           - path: /coinbase
             pathType: Prefix
             backend:
@@ -129,7 +143,119 @@ spec:
                 name: data-hunt
                 port:
                   name: http
+          - path: /compound
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /euler
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /feature-requests
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /fluid
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /gmx
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /hyperliquid
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /jupiter
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /lido
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /lighter
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /morpho
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /paradex
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /solana
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /stablecoins
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /stakedao
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /uniswap
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
           - path: /value
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /web3
             pathType: Prefix
             backend:
               service:
