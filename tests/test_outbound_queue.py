@@ -22,6 +22,7 @@ class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
             "api.coinbase.com": "coinbase",
             "api.bybit.com": "bybit",
             "api.bybit.id": "bybit",
+            "polygon-bor-rpc.publicnode.com": "polygon_rpc",
             "api.hyperliquid.xyz": "hyperliquid",
             "api.prod.paradex.trade": "paradex",
             "api.v3.aave.com": "aave_v3",

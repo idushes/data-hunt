@@ -9,6 +9,8 @@ from fastapi import HTTPException
 
 from routers.polymarket import (
     POLYMARKET_PAGE_SIZE,
+    POLYMARKET_PUSD_ADDRESS,
+    _fetch_pusd_balance,
     _fetch_polymarket_rows,
     _fetch_positions,
     _normalize_wallet,
@@ -58,15 +60,27 @@ class PolymarketParserTest(unittest.TestCase):
             _normalize_wallet("not-an-address")
 
     def test_returns_stable_summary_and_position_rows(self):
-        rows = _parse_rows(WALLET, [_position()], Decimal("110"))
+        rows = _parse_rows(
+            WALLET,
+            [_position()],
+            Decimal("110"),
+            Decimal("99.3341"),
+        )
 
-        self.assertEqual(len(rows), 2)
-        summary, position = rows
+        self.assertEqual(len(rows), 3)
+        summary, pusd, position = rows
         self.assertEqual(summary["position_id"], f"{WALLET}:portfolio")
         self.assertEqual(summary["row_type"], "portfolio_summary")
         self.assertEqual(summary["current_value_usd"], "110")
+        self.assertEqual(summary["total_account_value_usd"], "209.3341")
         self.assertEqual(summary["cash_pnl_usd"], "30")
         self.assertEqual(summary["percent_pnl"], "37.5")
+        self.assertEqual(pusd["position_id"], f"{WALLET}:pusd")
+        self.assertEqual(pusd["row_type"], "collateral_balance")
+        self.assertEqual(pusd["token_symbol"], "pUSD")
+        self.assertEqual(pusd["token_address"], POLYMARKET_PUSD_ADDRESS)
+        self.assertEqual(pusd["balance"], "99.3341")
+        self.assertEqual(pusd["balance_usd"], "99.3341")
         self.assertEqual(position["position_id"], "123456789")
         self.assertEqual(position["current_price"], "0.55")
         self.assertEqual(position["redeemable"], "true")
@@ -76,6 +90,24 @@ class PolymarketParserTest(unittest.TestCase):
 
 
 class PolymarketFetchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fetches_pusd_balance_from_official_contract(self):
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": 1, "result": hex(99_334_100)},
+            request=httpx.Request("POST", "https://polygon-bor-rpc.publicnode.com"),
+        )
+
+        balance = await _fetch_pusd_balance(client, WALLET)
+
+        self.assertEqual(balance, Decimal("99.3341"))
+        call = client.post.await_args
+        self.assertEqual(
+            call.kwargs["json"]["params"][0]["to"],
+            POLYMARKET_PUSD_ADDRESS,
+        )
+        self.assertTrue(call.kwargs["json"]["params"][0]["data"].endswith(WALLET[2:]))
+
     async def test_paginates_positions(self):
         first_page = [_position(str(index)) for index in range(POLYMARKET_PAGE_SIZE)]
         client = AsyncMock(spec=httpx.AsyncClient)
@@ -113,11 +145,18 @@ class PolymarketFetchTest(unittest.IsolatedAsyncioTestCase):
 
         client = AsyncMock(spec=httpx.AsyncClient)
         client.get.side_effect = get
+        client.post.return_value = httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": 1, "result": hex(99_334_100)},
+            request=httpx.Request("POST", "https://polygon-bor-rpc.publicnode.com"),
+        )
 
         rows = await _fetch_polymarket_rows(client, WALLET, 1)
 
         self.assertEqual(rows[0]["portfolio_value_usd"], "110")
-        self.assertEqual(rows[1]["title"], "Will this test pass?")
+        self.assertEqual(rows[0]["total_account_value_usd"], "209.3341")
+        self.assertEqual(rows[1]["balance"], "99.3341")
+        self.assertEqual(rows[2]["title"], "Will this test pass?")
 
     async def test_reports_upstream_failure(self):
         client = AsyncMock(spec=httpx.AsyncClient)
@@ -140,8 +179,9 @@ class PolymarketFetchTest(unittest.IsolatedAsyncioTestCase):
             response = await get_polymarket_positions_csv(WALLET, 1)
 
         parsed = list(csv.DictReader(io.StringIO(response.body.decode())))
-        self.assertEqual(len(parsed), 2)
+        self.assertEqual(len(parsed), 3)
         self.assertEqual(parsed[0]["position_id"], f"{WALLET}:portfolio")
+        self.assertEqual(parsed[1]["position_id"], f"{WALLET}:pusd")
         self.assertEqual(response.headers["cache-control"], "public, max-age=60")
 
 

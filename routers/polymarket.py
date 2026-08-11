@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import io
+import os
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -13,6 +14,10 @@ from outbound_queue import queued_async_client
 
 
 POLYMARKET_API_URL = "https://data-api.polymarket.com"
+POLYMARKET_POLYGON_RPC_URL = "https://polygon-bor-rpc.publicnode.com"
+POLYMARKET_PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+POLYMARKET_PUSD_DECIMALS = 6
+BALANCE_OF_SELECTOR = "70a08231"
 POLYMARKET_CACHE_TTL_SECONDS = 60
 POLYMARKET_PAGE_SIZE = 500
 POLYMARKET_CSV_HEADER = [
@@ -22,6 +27,10 @@ POLYMARKET_CSV_HEADER = [
     "protocol",
     "position_id",
     "row_type",
+    "token_symbol",
+    "token_address",
+    "balance",
+    "balance_usd",
     "asset_id",
     "condition_id",
     "title",
@@ -48,6 +57,7 @@ POLYMARKET_CSV_HEADER = [
     "end_date",
     "negative_risk",
     "portfolio_value_usd",
+    "total_account_value_usd",
 ]
 
 router = APIRouter(prefix="/polymarket", tags=["polymarket"])
@@ -133,6 +143,47 @@ async def _fetch_positions(
     return positions
 
 
+async def _fetch_pusd_balance(
+    client: httpx.AsyncClient,
+    wallet: str,
+) -> Decimal:
+    encoded_wallet = wallet[2:].lower().rjust(64, "0")
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_call",
+        "params": [
+            {
+                "to": POLYMARKET_PUSD_ADDRESS,
+                "data": f"0x{BALANCE_OF_SELECTOR}{encoded_wallet}",
+            },
+            "latest",
+        ],
+    }
+    rpc_url = os.getenv("POLYMARKET_POLYGON_RPC_URL") or POLYMARKET_POLYGON_RPC_URL
+    try:
+        response = await client.post(rpc_url, json=payload)
+        response.raise_for_status()
+        result = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Polygon RPC request for Polymarket pUSD failed",
+        ) from exc
+
+    raw_balance = result.get("result") if isinstance(result, dict) else None
+    try:
+        amount = int(raw_balance, 16) if isinstance(raw_balance, str) else None
+    except ValueError:
+        amount = None
+    if amount is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Polygon RPC returned an invalid Polymarket pUSD balance",
+        )
+    return Decimal(amount) / (Decimal(10) ** POLYMARKET_PUSD_DECIMALS)
+
+
 def _portfolio_value(payload: object, wallet: str) -> Decimal:
     if not isinstance(payload, list):
         raise HTTPException(
@@ -152,6 +203,7 @@ def _position_row(
     wallet: str,
     position: dict[str, Any],
     portfolio_value: Decimal,
+    total_account_value: Decimal,
 ) -> dict[str, str]:
     asset = str(position.get("asset") or "")
     event_slug = str(position.get("eventSlug") or "")
@@ -192,6 +244,7 @@ def _position_row(
             "end_date": str(position.get("endDate") or ""),
             "negative_risk": _boolean(position.get("negativeRisk")),
             "portfolio_value_usd": _format_decimal(portfolio_value),
+            "total_account_value_usd": _format_decimal(total_account_value),
         }
     )
     return row
@@ -201,7 +254,9 @@ def _parse_rows(
     wallet: str,
     positions: list[dict[str, Any]],
     portfolio_value: Decimal,
+    pusd_balance: Decimal = Decimal(0),
 ) -> list[dict[str, str]]:
+    total_account_value = portfolio_value + pusd_balance
     initial_value = sum(
         (_decimal(position.get("initialValue")) for position in positions),
         Decimal(0),
@@ -232,15 +287,36 @@ def _parse_rows(
             "percent_pnl": _format_decimal(percent_pnl),
             "realized_pnl_usd": _format_decimal(realized_pnl),
             "portfolio_value_usd": _format_decimal(portfolio_value),
+            "total_account_value_usd": _format_decimal(total_account_value),
+        }
+    )
+    pusd = {column: "" for column in POLYMARKET_CSV_HEADER}
+    pusd.update(
+        {
+            "wallet": wallet,
+            "chain_id": "137",
+            "chain": "Polygon",
+            "protocol": "Polymarket",
+            "position_id": f"{wallet}:pusd",
+            "row_type": "collateral_balance",
+            "token_symbol": "pUSD",
+            "token_address": POLYMARKET_PUSD_ADDRESS,
+            "balance": _format_decimal(pusd_balance),
+            "balance_usd": _format_decimal(pusd_balance),
+            "title": "Polymarket USD",
+            "current_price": "1",
+            "current_value_usd": _format_decimal(pusd_balance),
+            "portfolio_value_usd": _format_decimal(portfolio_value),
+            "total_account_value_usd": _format_decimal(total_account_value),
         }
     )
     rows = [
-        _position_row(wallet, position, portfolio_value)
+        _position_row(wallet, position, portfolio_value, total_account_value)
         for position in positions
         if position.get("asset") is not None
     ]
     rows.sort(key=lambda row: row["position_id"])
-    return [summary, *rows]
+    return [summary, pusd, *rows]
 
 
 async def _fetch_polymarket_rows(
@@ -248,11 +324,17 @@ async def _fetch_polymarket_rows(
     wallet: str,
     size_threshold: float,
 ) -> list[dict[str, str]]:
-    positions, value_payload = await asyncio.gather(
+    positions, value_payload, pusd_balance = await asyncio.gather(
         _fetch_positions(client, wallet, size_threshold),
         _get_json(client, "/value", {"user": wallet}),
+        _fetch_pusd_balance(client, wallet),
     )
-    return _parse_rows(wallet, positions, _portfolio_value(value_payload, wallet))
+    return _parse_rows(
+        wallet,
+        positions,
+        _portfolio_value(value_payload, wallet),
+        pusd_balance,
+    )
 
 
 def _render_csv(rows: list[dict[str, str]]) -> str:
@@ -267,14 +349,15 @@ def _render_csv(rows: list[dict[str, str]]) -> str:
     "/positions.csv",
     summary="Export Polymarket positions",
     description=(
-        "Returns a Polymarket portfolio summary and current market positions with "
-        "prices, value, PnL, outcomes, and redeemable status. Use the Polymarket "
-        "profile/proxy wallet address shown in the user's profile."
+        "Returns a Polymarket portfolio summary, on-chain pUSD collateral balance, "
+        "and current market positions with prices, value, PnL, outcomes, and "
+        "redeemable status. Use the Polymarket funder address: an existing "
+        "profile proxy/Safe or the deposit wallet that holds pUSD."
     ),
     responses={200: {"content": {"text/csv": {}}}},
 )
 async def get_polymarket_positions_csv(
-    address: str = Query(..., description="Polymarket profile/proxy wallet address."),
+    address: str = Query(..., description="Polymarket funder wallet address."),
     size_threshold: float = Query(
         1,
         ge=0,

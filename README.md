@@ -42,13 +42,15 @@ an interrupted instance cannot leave stale activity in the dashboard.
 ## Polymarket positions
 
 `GET /polymarket/positions.csv?address=0x...` reads the public Polymarket Data
-API using the profile/proxy wallet address. It returns a stable
-`{wallet}:portfolio` summary row followed by current market positions, including
-outcomes, prices, value, PnL, and redeemable/mergeable flags. No Polymarket API
-key is required. Market rows default to positions of at least one outcome token;
-pass `size_threshold=0` to include dust. The portfolio summary remains the full
-value. Responses use the shared 60-second CSV cache and the dedicated Polymarket
-outbound queue.
+API using the funder address: an existing profile proxy/Safe or a new deposit
+wallet. It returns a stable
+`{wallet}:portfolio` summary row, a stable `{wallet}:pusd` collateral-balance
+row read directly from the official pUSD contract on Polygon, and current market
+positions. The export includes outcomes, prices, value, PnL, redeemable/mergeable
+flags, and `total_account_value_usd` across pUSD cash and market positions. No
+Polymarket API key is required. Market rows default to positions of at least one
+outcome token; pass `size_threshold=0` to include dust. Responses use the shared
+60-second CSV cache and dedicated Polymarket and Polygon RPC queues.
 
 ## Pendle positions
 
