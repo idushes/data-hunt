@@ -34,6 +34,15 @@ def _day_label(day: int) -> str:
     return datetime.fromtimestamp(day * 86400, tz=timezone.utc).date().isoformat()
 
 
+@router.get("/access")
+def get_admin_access(
+    response: Response,
+    _: Account = Depends(_require_admin),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"is_admin": True}
+
+
 @router.get("/queues")
 async def get_admin_queue_status(
     response: Response,

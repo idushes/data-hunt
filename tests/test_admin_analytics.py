@@ -157,6 +157,24 @@ class AdminAnalyticsTest(unittest.TestCase):
         self.assertEqual(forbidden.status_code, 403)
         self.assertEqual(invalid_period.status_code, 400)
 
+    def test_returns_lightweight_admin_access_status(self):
+        admin_token = self._token("admin-account", "admin-token")
+        user_token = self._token("user-account", "user-token")
+        with TestClient(self.app) as client:
+            allowed = client.get(
+                "/admin/analytics/access",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            forbidden = client.get(
+                "/admin/analytics/access",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(allowed.json(), {"is_admin": True})
+        self.assertEqual(allowed.headers["cache-control"], "private, no-store")
+        self.assertEqual(forbidden.status_code, 403)
+
     def test_returns_private_live_queue_status_to_admin_only(self):
         admin_token = self._token("admin-account", "admin-token")
         user_token = self._token("user-account", "user-token")
