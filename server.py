@@ -19,6 +19,7 @@ from redis_client import close_redis_client
 from routers.aave import router as aave_router
 from routers.admin_analytics import router as admin_analytics_router
 from routers.auth import router as auth_router
+from routers.binance import router as binance_router
 from routers.bybit import router as bybit_router
 from routers.chains import router as chains_router
 from routers.cmc import router as cmc_router
@@ -122,6 +123,7 @@ app.include_router(lighter_router)
 app.include_router(hyperliquid_router)
 app.include_router(coinbase_router)
 app.include_router(bybit_router)
+app.include_router(binance_router)
 app.include_router(solana_router)
 app.include_router(fluid_router)
 app.include_router(aave_router)

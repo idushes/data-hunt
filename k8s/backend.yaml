@@ -138,6 +138,13 @@ spec:
                 name: data-hunt
                 port:
                   name: http
+          - path: /binance
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
           - path: /cmc
             pathType: Prefix
             backend:

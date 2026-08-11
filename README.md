@@ -118,6 +118,15 @@ in memory, never persisted, and the capsule is stored only in the user's
 browser. Select `region` when the account uses a regional Bybit API endpoint.
 Responses use the shared 60-second CSV cache and a dedicated outbound queue.
 
+## Binance account data
+
+`GET /binance/account.csv?capsule=...` returns non-zero Spot balances with
+estimated USD values and, when available, USD-M Futures balances and open
+positions. Create the encrypted access key with `POST /binance/capsule`; only
+read-only Binance keys are accepted. Raw credentials are validated and
+encrypted in memory, never persisted, and the capsule is stored only in the
+user's browser. Responses use the shared CSV cache and Binance outbound queue.
+
 ## Short value resources
 
 `POST /value-resources` stores a credential-free description of one requested

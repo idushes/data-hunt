@@ -60,6 +60,13 @@ DEFAULT_POLICIES = (
         1,
         4,
     ),
+    ProviderPolicy(
+        "binance",
+        ("api.binance.com", "fapi.binance.com"),
+        2400,
+        60,
+        3,
+    ),
     ProviderPolicy("hyperliquid", ("api.hyperliquid.xyz",), 1080, 60, 4),
     ProviderPolicy("paradex", ("api.prod.paradex.trade",), 8, 1, 4),
     ProviderPolicy("lighter", ("mainnet.zklighter.elliot.ai",), 3, 1, 2),
@@ -205,6 +212,12 @@ def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
 
 
 def _request_cost(provider: str, request: httpx.Request, content: bytes) -> int:
+    if provider == "binance":
+        return {
+            "/api/v3/account": 20,
+            "/api/v3/ticker/price": 4,
+            "/fapi/v3/account": 5,
+        }.get(request.url.path, 1)
     if provider != "hyperliquid" or request.url.path != "/info":
         return 1
     try:

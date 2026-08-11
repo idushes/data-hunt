@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from routers.aave import AAVE_CSV_HEADER
+from routers.binance import BINANCE_CSV_HEADER
 from routers.bybit import BYBIT_CSV_HEADER
 from routers.coinbase import COINBASE_CSV_HEADER
 from routers.compound import COMPOUND_CSV_HEADER
@@ -34,6 +35,7 @@ PUBLISHED_VALUE_SOURCES = {
     "hyperliquid": ValueSource("/hyperliquid/balance", "account"),
     "coinbase": ValueSource("/coinbase/balance", "id"),
     "bybit": ValueSource("/bybit/account.csv", "id"),
+    "binance": ValueSource("/binance/account.csv", "id"),
     "gmtrade-assets": ValueSource("/solana/gmtrade.csv", "mint"),
     "gmtrade-perps": ValueSource(
         "/solana/gmtrade-perps.csv", "position_address"
@@ -94,6 +96,7 @@ PUBLISHED_CSV_HEADERS = {
     ],
     "coinbase": COINBASE_CSV_HEADER,
     "bybit": BYBIT_CSV_HEADER,
+    "binance": BINANCE_CSV_HEADER,
     "gmtrade-assets": GMTRADE_CSV_HEADER,
     "gmtrade-perps": GMTRADE_PERP_CSV_HEADER,
     "kamino-vaults": KAMINO_CSV_HEADER,
@@ -122,6 +125,7 @@ class PublishedApiContractTest(unittest.TestCase):
 
         self.assertIn("coinbase_capsule.py", dockerfile)
         self.assertIn("bybit_capsule.py", dockerfile)
+        self.assertIn("binance_capsule.py", dockerfile)
 
     def test_value_source_aliases_and_paths_do_not_change_silently(self):
         self.assertEqual(VALUE_SOURCES, PUBLISHED_VALUE_SOURCES)
@@ -189,6 +193,16 @@ class PublishedApiContractTest(unittest.TestCase):
         self.assertNotIn("api_key", parameter_names)
         self.assertNotIn("api_secret", parameter_names)
         self.assertIn("post", schema["paths"]["/bybit/capsule"])
+
+    def test_binance_uses_capsules_instead_of_raw_credentials(self):
+        schema = app.openapi()
+        parameters = schema["paths"]["/binance/account.csv"]["get"]["parameters"]
+        parameter_names = {parameter["name"] for parameter in parameters}
+
+        self.assertIn("capsule", parameter_names)
+        self.assertNotIn("api_key", parameter_names)
+        self.assertNotIn("api_secret", parameter_names)
+        self.assertIn("post", schema["paths"]["/binance/capsule"])
 
 
 if __name__ == "__main__":

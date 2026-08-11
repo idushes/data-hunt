@@ -22,6 +22,8 @@ class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
             "api.coinbase.com": "coinbase",
             "api.bybit.com": "bybit",
             "api.bybit.id": "bybit",
+            "api.binance.com": "binance",
+            "fapi.binance.com": "binance",
             "polygon-bor-rpc.publicnode.com": "polygon_rpc",
             "api.hyperliquid.xyz": "hyperliquid",
             "api.prod.paradex.trade": "paradex",
@@ -61,6 +63,33 @@ class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
             20,
         )
 
+    def test_binance_request_weights_are_applied(self):
+        self.assertEqual(
+            _request_cost(
+                "binance",
+                httpx.Request("GET", "https://api.binance.com/api/v3/account"),
+                b"",
+            ),
+            20,
+        )
+        self.assertEqual(
+            _request_cost(
+                "binance",
+                httpx.Request(
+                    "GET", "https://api.binance.com/api/v3/ticker/price"
+                ),
+                b"",
+            ),
+            4,
+        )
+        self.assertEqual(
+            _request_cost(
+                "binance",
+                httpx.Request("GET", "https://fapi.binance.com/fapi/v3/account"),
+                b"",
+            ),
+            5,
+        )
     async def test_local_fallback_reserves_ordered_slots(self):
         queue = OutboundRequestQueue()
         policy = ProviderPolicy("test", ("test.example",), 2, 1, 1)
