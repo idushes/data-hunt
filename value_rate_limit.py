@@ -22,7 +22,7 @@ from config import (
     VALUE_RATE_LIMIT_WINDOW_SECONDS,
 )
 from database import SessionLocal
-from models import AccountToken, UsageDaily
+from models import AccountToken, UsageDaily, ValueResource
 from redis_client import get_redis_client
 
 
@@ -248,8 +248,7 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
             return "client_error"
         return "server_error"
 
-    @staticmethod
-    def _usage_source(request: Request, response: Response | None = None) -> str:
+    def _usage_source(self, request: Request, response: Response | None = None) -> str:
         if response is not None:
             resolved = response.headers.get("x-value-source", "").strip()
             if resolved:
@@ -258,6 +257,12 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
         if path == "value":
             return (request.query_params.get("source") or "value")[:64]
         if path.startswith("v/"):
+            resource_id = path.removeprefix("v/").split("/", 1)[0]
+            if resource_id:
+                with self._session_factory() as db:
+                    resource = db.get(ValueResource, resource_id)
+                    if resource is not None and resource.source:
+                        return resource.source[:64]
             return "short-value"
         if path == "value-resources":
             return "resource-setup"
