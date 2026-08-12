@@ -114,6 +114,50 @@ async def get_admin_analytics(
         .limit(12)
         .all()
     )
+    error_source_rows = (
+        period.with_entities(
+            UsageDaily.source,
+            func.sum(UsageDaily.request_count).label("requests"),
+            func.sum(
+                case(
+                    (UsageDaily.status_group != "success", UsageDaily.request_count),
+                    else_=0,
+                )
+            ).label("errors"),
+            func.sum(
+                case(
+                    (UsageDaily.status_group == "client_error", UsageDaily.request_count),
+                    else_=0,
+                )
+            ).label("client_errors"),
+            func.sum(
+                case(
+                    (UsageDaily.status_group == "server_error", UsageDaily.request_count),
+                    else_=0,
+                )
+            ).label("server_errors"),
+        )
+        .group_by(UsageDaily.source)
+        .having(
+            func.sum(
+                case(
+                    (UsageDaily.status_group != "success", UsageDaily.request_count),
+                    else_=0,
+                )
+            )
+            > 0
+        )
+        .order_by(
+            func.sum(
+                case(
+                    (UsageDaily.status_group != "success", UsageDaily.request_count),
+                    else_=0,
+                )
+            ).desc(),
+            UsageDaily.source,
+        )
+        .all()
+    )
     daily_rows = {
         day: {"requests": int(requests), "users": int(users)}
         for day, requests, users in (
@@ -153,5 +197,16 @@ async def get_admin_analytics(
                 "errors": int(errors),
             }
             for source, requests, users, errors in source_rows
+        ],
+        "error_sources": [
+            {
+                "source": source,
+                "requests": int(requests),
+                "errors": int(errors),
+                "client_errors": int(client_errors),
+                "server_errors": int(server_errors),
+                "error_rate": round(int(errors) / int(requests) * 100, 1),
+            }
+            for source, requests, errors, client_errors, server_errors in error_source_rows
         ],
     }

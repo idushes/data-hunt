@@ -137,6 +137,19 @@ class AdminAnalyticsTest(unittest.TestCase):
         self.assertEqual(len(payload["daily"]), 7)
         self.assertEqual(payload["sources"][0]["source"], "uniswap")
         self.assertEqual(payload["sources"][0]["requests"], 10)
+        self.assertEqual(
+            payload["error_sources"],
+            [
+                {
+                    "source": "uniswap",
+                    "requests": 10,
+                    "errors": 2,
+                    "client_errors": 0,
+                    "server_errors": 2,
+                    "error_rate": 20.0,
+                }
+            ],
+        )
         self.assertNotIn("account_id", response.text)
         self.assertNotIn(ADMIN_ADDRESS, response.text)
 

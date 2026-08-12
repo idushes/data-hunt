@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
 
@@ -136,6 +136,7 @@ class StableValueRouteTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 418)
         self.assertEqual(response.json()["detail"], "source failed")
+        self.assertEqual(response.headers["x-value-source"], "failure")
 
     def test_accepts_temporary_evm_ethereum_key_alias(self):
         with TestClient(self.app) as client:

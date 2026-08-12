@@ -299,11 +299,12 @@ async def _request_source(
         )
 
 
-def _raise_source_error(response: httpx.Response) -> None:
+def _raise_source_error(response: httpx.Response, source: str | None = None) -> None:
     if response.status_code >= 400:
         raise HTTPException(
             status_code=response.status_code,
             detail=_source_error(response),
+            headers={"X-Value-Source": source} if source else None,
         )
 
 
@@ -327,7 +328,7 @@ async def _resolve_stable_value(
         source_config.path,
         forwarded_query,
     )
-    _raise_source_error(source_response)
+    _raise_source_error(source_response, source)
 
     content_type = source_response.headers.get("content-type", "").lower()
     if not content_type.startswith("text/csv"):
@@ -389,7 +390,7 @@ async def _resolve_direct_value(
         raise HTTPException(status_code=400, detail="Unsupported value source")
 
     source_response = await _request_source(request, path, forwarded_query)
-    _raise_source_error(source_response)
+    _raise_source_error(source_response, source)
     content_type = source_response.headers.get("content-type", "").lower()
     if content_type.startswith("text/csv"):
         rows = [row for row in csv.reader(io.StringIO(source_response.text)) if row]
