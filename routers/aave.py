@@ -1,13 +1,17 @@
 import asyncio
+import base64
 import csv
 import io
+import os
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
+from eth_abi import decode, encode
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
+from web3 import Web3
 
 from outbound_queue import queued_async_client
 
@@ -15,6 +19,12 @@ from outbound_queue import queued_async_client
 AAVE_V3_API_URL = "https://api.v3.aave.com/graphql"
 AAVE_V4_API_URL = "https://api.v4.aave.com/graphql"
 AAVE_V4_CHAIN_IDS = {1, 43114}
+AAVE_V4_ETHEREUM_RPC_URL = "https://ethereum-rpc.publicnode.com"
+AAVE_V4_ONCHAIN_SPOKES = {
+    1: (
+        ("Main", "0x94e7a5dcbe816e498b89ab752661904e2f56c485"),
+    ),
+}
 AAVE_CACHE_TTL_SECONDS = 60
 AAVE_CSV_HEADER = [
     "wallet",
@@ -348,6 +358,351 @@ async def _fetch_graphql(
     return payload["data"]
 
 
+def _contract_call_data(
+    signature: str,
+    types: list[str] | None = None,
+    values: list[object] | None = None,
+) -> str:
+    payload = Web3.keccak(text=signature)[:4]
+    if types:
+        payload += encode(types, values or [])
+    return "0x" + payload.hex()
+
+
+def _decode_contract_result(result: object, types: list[str]) -> tuple[Any, ...]:
+    if not isinstance(result, str) or not result.startswith("0x"):
+        raise ValueError("missing eth_call result")
+    return decode(types, bytes.fromhex(result[2:]))
+
+
+async def _aave_v4_rpc_batch(
+    client: httpx.AsyncClient,
+    rpc_url: str,
+    calls: list[tuple[str, str, list[str]]],
+) -> list[tuple[Any, ...]]:
+    payload = [
+        {
+            "jsonrpc": "2.0",
+            "id": index,
+            "method": "eth_call",
+            "params": [{"to": address, "data": data}, "latest"],
+        }
+        for index, (address, data, _types) in enumerate(calls)
+    ]
+    try:
+        response = await client.post(rpc_url, json=payload)
+        response.raise_for_status()
+        values = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Aave V4 on-chain fallback request failed",
+        ) from exc
+
+    if not isinstance(values, list):
+        raise HTTPException(
+            status_code=502,
+            detail="Aave V4 on-chain fallback returned invalid data",
+        )
+    by_id = {
+        item.get("id"): item
+        for item in values
+        if isinstance(item, dict) and isinstance(item.get("id"), int)
+    }
+    decoded: list[tuple[Any, ...]] = []
+    for index, (_address, _data, output_types) in enumerate(calls):
+        item = by_id.get(index, {})
+        try:
+            decoded.append(_decode_contract_result(item.get("result"), output_types))
+        except (TypeError, ValueError) as exc:
+            error = item.get("error") if isinstance(item, dict) else None
+            detail = "Aave V4 on-chain fallback returned undecodable data"
+            if isinstance(error, dict) and error.get("message"):
+                detail = f"Aave V4 on-chain fallback RPC error: {error['message']}"
+            raise HTTPException(
+                status_code=502,
+                detail=detail,
+            ) from exc
+    return decoded
+
+
+async def _aave_v4_rpc_call(
+    client: httpx.AsyncClient,
+    rpc_url: str,
+    address: str,
+    signature: str,
+    output_types: list[str],
+) -> tuple[Any, ...]:
+    values = await _aave_v4_rpc_batch(
+        client,
+        rpc_url,
+        [(address, _contract_call_data(signature), output_types)],
+    )
+    return values[0]
+
+
+def _position_account_id(chain_id: int, spoke: str, wallet: str) -> str:
+    raw = (
+        f"{chain_id}::{Web3.to_checksum_address(spoke)}::"
+        f"{Web3.to_checksum_address(wallet)}"
+    )
+    return base64.b64encode(raw.encode()).decode()
+
+
+async def _erc20_metadata(
+    client: httpx.AsyncClient,
+    rpc_url: str,
+    token_addresses: list[str],
+) -> dict[str, tuple[str, str]]:
+    calls = [
+        (token, _contract_call_data(signature), ["string"])
+        for token in token_addresses
+        for signature in ("name()", "symbol()")
+    ]
+    values = await _aave_v4_rpc_batch(client, rpc_url, calls)
+    return {
+        token.lower(): (_text(values[index * 2][0]), _text(values[index * 2 + 1][0]))
+        for index, token in enumerate(token_addresses)
+    }
+
+
+async def _fetch_aave_v4_onchain_spoke_rows(
+    client: httpx.AsyncClient,
+    wallet: str,
+    chain_id: int,
+    market_name: str,
+    spoke: str,
+    rpc_url: str,
+) -> list[dict[str, str]]:
+    reserve_count = int(
+        (await _aave_v4_rpc_call(client, rpc_url, spoke, "getReserveCount()", ["uint256"]))[0]
+    )
+    if reserve_count <= 0:
+        return []
+
+    reserve_types = ["address", "address", "uint16", "uint8", "uint24", "uint8", "uint32"]
+    position_types = ["uint120", "uint120", "int200", "uint120", "uint32"]
+    calls: list[tuple[str, str, list[str]]] = []
+    for reserve_id in range(reserve_count):
+        calls.extend(
+            [
+                (
+                    spoke,
+                    _contract_call_data("getReserve(uint256)", ["uint256"], [reserve_id]),
+                    reserve_types,
+                ),
+                (
+                    spoke,
+                    _contract_call_data(
+                        "getUserSuppliedAssets(uint256,address)",
+                        ["uint256", "address"],
+                        [reserve_id, wallet],
+                    ),
+                    ["uint256"],
+                ),
+                (
+                    spoke,
+                    _contract_call_data(
+                        "getUserTotalDebt(uint256,address)",
+                        ["uint256", "address"],
+                        [reserve_id, wallet],
+                    ),
+                    ["uint256"],
+                ),
+                (
+                    spoke,
+                    _contract_call_data(
+                        "getUserReserveStatus(uint256,address)",
+                        ["uint256", "address"],
+                        [reserve_id, wallet],
+                    ),
+                    ["bool", "bool"],
+                ),
+                (
+                    spoke,
+                    _contract_call_data(
+                        "getUserPosition(uint256,address)",
+                        ["uint256", "address"],
+                        [reserve_id, wallet],
+                    ),
+                    position_types,
+                ),
+            ]
+        )
+    values = await _aave_v4_rpc_batch(client, rpc_url, calls)
+
+    active: list[dict[str, Any]] = []
+    for reserve_id in range(reserve_count):
+        offset = reserve_id * 5
+        reserve = values[offset]
+        supplied = int(values[offset + 1][0])
+        debt = int(values[offset + 2][0])
+        collateral, borrowing = values[offset + 3]
+        dynamic_config_key = int(values[offset + 4][4])
+        if supplied == 0 and debt == 0:
+            continue
+        active.append(
+            {
+                "reserve_id": reserve_id,
+                "token": _text(reserve[0]).lower(),
+                "decimals": int(reserve[3]),
+                "supplied": supplied,
+                "debt": debt,
+                "collateral": bool(collateral),
+                "borrowing": bool(borrowing),
+                "dynamic_config_key": dynamic_config_key,
+            }
+        )
+    if not active:
+        return []
+
+    oracle = _text(
+        (await _aave_v4_rpc_call(client, rpc_url, spoke, "ORACLE()", ["address"]))[0]
+    )
+    detail_calls: list[tuple[str, str, list[str]]] = []
+    for item in active:
+        detail_calls.extend(
+            [
+                (
+                    oracle,
+                    _contract_call_data(
+                        "getReservePrice(uint256)",
+                        ["uint256"],
+                        [item["reserve_id"]],
+                    ),
+                    ["uint256"],
+                ),
+                (
+                    spoke,
+                    _contract_call_data(
+                        "getDynamicReserveConfig(uint256,uint32)",
+                        ["uint256", "uint32"],
+                        [item["reserve_id"], item["dynamic_config_key"]],
+                    ),
+                    ["uint16", "uint32", "uint16"],
+                ),
+            ]
+        )
+    details = await _aave_v4_rpc_batch(client, rpc_url, detail_calls)
+    metadata = await _erc20_metadata(
+        client,
+        rpc_url,
+        [item["token"] for item in active],
+    )
+    try:
+        account_data = await _aave_v4_rpc_call(
+            client,
+            rpc_url,
+            spoke,
+            "getUserAccountData(address)",
+            ["uint256", "uint256", "uint256", "uint256", "uint256", "uint256", "uint256"],
+        )
+    except HTTPException:
+        await asyncio.sleep(0.25)
+        account_data = await _aave_v4_rpc_call(
+            client,
+            rpc_url,
+            spoke,
+            "getUserAccountData(address)",
+            ["uint256", "uint256", "uint256", "uint256", "uint256", "uint256", "uint256"],
+        )
+
+    account_position_id = _position_account_id(chain_id, spoke, wallet)
+    total_supplied_usd = Decimal("0")
+    total_debt_usd = Decimal("0")
+    rows: list[dict[str, str]] = []
+    for index, item in enumerate(active):
+        price = Decimal(int(details[index * 2][0])) / Decimal(10**8)
+        collateral_factor = Decimal(int(details[index * 2 + 1][0])) / Decimal(100)
+        scale = Decimal(10 ** item["decimals"])
+        supplied = Decimal(item["supplied"]) / scale
+        debt = Decimal(item["debt"]) / scale
+        supplied_usd = supplied * price
+        debt_usd = debt * price
+        total_supplied_usd += supplied_usd
+        total_debt_usd += debt_usd
+        token_name, token_symbol = metadata.get(item["token"], ("", ""))
+        if item["token"] == "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2":
+            token_name, token_symbol = "Ether", "ETH"
+
+        row = {column: "" for column in AAVE_CSV_HEADER}
+        row.update(
+            {
+                "wallet": wallet,
+                "chain_id": str(chain_id),
+                "chain": "Ethereum",
+                "market": f"Aave V4 {market_name}",
+                "market_address": spoke,
+                "position_id": f"v4:{account_position_id}:{item['token']}",
+                "token_symbol": token_symbol,
+                "token_name": token_name,
+                "token_address": item["token"],
+                "token_price_usd": _format_decimal(price),
+                "supply_amount": _format_decimal(supplied) if supplied else "",
+                "supply_usd": _format_decimal(supplied_usd) if supplied else "",
+                "is_collateral": str(item["collateral"]).lower(),
+                "can_be_collateral": str(collateral_factor > 0).lower(),
+                "borrow_amount": _format_decimal(debt) if debt else "",
+                "borrow_usd": _format_decimal(debt_usd) if debt else "",
+                "net_usd": _format_decimal(supplied_usd - debt_usd),
+                "health_factor": (
+                    _format_decimal(Decimal(int(account_data[2])) / Decimal(10**18))
+                    if int(account_data[4]) > 0
+                    else ""
+                ),
+                "protocol_version": "v4",
+                "account_position_id": account_position_id,
+                "position_total_collateral_usd": _format_decimal(
+                    Decimal(int(account_data[3])) / Decimal(10**26)
+                ),
+                "position_average_collateral_factor_percent": _format_decimal(
+                    Decimal(int(account_data[1])) / Decimal(10**16)
+                ),
+            }
+        )
+        rows.append(row)
+
+    total_collateral_usd = Decimal(int(account_data[3])) / Decimal(10**26)
+    net_usd = total_supplied_usd - total_debt_usd
+    for row in rows:
+        row["position_total_supplied_usd"] = _format_decimal(total_supplied_usd)
+        row["position_total_debt_usd"] = _format_decimal(total_debt_usd)
+        row["position_net_balance_usd"] = _format_decimal(net_usd)
+        row["position_total_collateral_usd"] = _format_decimal(total_collateral_usd)
+    return sorted(rows, key=lambda row: row["position_id"])
+
+
+async def _fetch_aave_v4_onchain_rows(
+    client: httpx.AsyncClient,
+    wallet: str,
+    chain_id: int,
+) -> list[dict[str, str]]:
+    spokes = AAVE_V4_ONCHAIN_SPOKES.get(chain_id)
+    if not spokes:
+        raise HTTPException(
+            status_code=502,
+            detail="Aave V4 on-chain fallback is unavailable for this chain",
+        )
+    rpc_url = os.getenv("AAVE_V4_ETHEREUM_RPC_URL") or AAVE_V4_ETHEREUM_RPC_URL
+    results = await asyncio.gather(
+        *(
+            _fetch_aave_v4_onchain_spoke_rows(
+                client,
+                wallet,
+                chain_id,
+                market_name,
+                spoke,
+                rpc_url,
+            )
+            for market_name, spoke in spokes
+        )
+    )
+    return sorted(
+        (row for spoke_rows in results for row in spoke_rows),
+        key=lambda row: row["position_id"],
+    )
+
+
 async def _fetch_aave_v3_rows(
     client: httpx.AsyncClient,
     wallet: str,
@@ -545,20 +900,26 @@ async def _fetch_aave_v4_rows(
     chain_id: int,
 ) -> list[dict[str, str]]:
     user_chains = {"user": wallet, "chainIds": [chain_id]}
-    data = await _fetch_graphql(
-        client,
-        AAVE_V4_POSITIONS_QUERY,
-        {
-            "positionsRequest": {
-                "user": wallet,
-                "filter": {"chainIds": [chain_id]},
+    try:
+        data = await _fetch_graphql(
+            client,
+            AAVE_V4_POSITIONS_QUERY,
+            {
+                "positionsRequest": {
+                    "user": wallet,
+                    "filter": {"chainIds": [chain_id]},
+                },
+                "suppliesRequest": {"query": {"userChains": user_chains}},
+                "borrowsRequest": {"query": {"userChains": user_chains}},
             },
-            "suppliesRequest": {"query": {"userChains": user_chains}},
-            "borrowsRequest": {"query": {"userChains": user_chains}},
-        },
-        AAVE_V4_API_URL,
-    )
-    return _parse_v4_positions(wallet, chain_id, data)
+            AAVE_V4_API_URL,
+        )
+        return _parse_v4_positions(wallet, chain_id, data)
+    except HTTPException:
+        rows = await _fetch_aave_v4_onchain_rows(client, wallet, chain_id)
+        if rows:
+            return rows
+        raise
 
 
 async def _fetch_aave_rows(

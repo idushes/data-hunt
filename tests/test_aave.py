@@ -1,4 +1,5 @@
 import csv
+import base64
 import io
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,7 @@ from routers.aave import (
     AAVE_V4_API_URL,
     _fetch_aave_rows,
     _fetch_aave_v3_rows,
+    _fetch_aave_v4_onchain_rows,
     _fetch_aave_v4_rows,
     _graphql_error,
     _parse_positions,
@@ -294,6 +296,110 @@ class AaveFetchTest(unittest.IsolatedAsyncioTestCase):
             variables["suppliesRequest"]["query"]["userChains"],
             {"user": WALLET, "chainIds": [1]},
         )
+
+    async def test_falls_back_to_onchain_v4_when_graphql_fails(self):
+        fallback_rows = [{"position_id": "v4-onchain"}]
+        client = object()
+        with (
+            patch(
+                "routers.aave._fetch_graphql",
+                AsyncMock(side_effect=HTTPException(status_code=502, detail="broken")),
+            ),
+            patch(
+                "routers.aave._fetch_aave_v4_onchain_rows",
+                AsyncMock(return_value=fallback_rows),
+            ) as fallback,
+        ):
+            rows = await _fetch_aave_v4_rows(client, WALLET, 1)
+
+        self.assertEqual(rows, fallback_rows)
+        fallback.assert_awaited_once_with(client, WALLET, 1)
+
+    async def test_keeps_graphql_error_when_onchain_fallback_is_empty(self):
+        error = HTTPException(status_code=502, detail="broken")
+        with (
+            patch("routers.aave._fetch_graphql", AsyncMock(side_effect=error)),
+            patch(
+                "routers.aave._fetch_aave_v4_onchain_rows",
+                AsyncMock(return_value=[]),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as context:
+                await _fetch_aave_v4_rows(object(), WALLET, 1)
+
+        self.assertIs(context.exception, error)
+
+    async def test_parses_onchain_v4_main_position(self):
+        reserve_count = (3,)
+        reserves_and_positions = [
+            (WETH, "0x2222222222222222222222222222222222222222", 0, 18, 0, 12, 0),
+            (51_385_420_964_234_388_860,),
+            (0,),
+            (True, False),
+            (0, 0, 0, 1, 0),
+            (WSTETH, "0x2222222222222222222222222222222222222222", 1, 18, 0, 8, 0),
+            (11_049_621_068_669_180_631,),
+            (0,),
+            (True, False),
+            (0, 0, 0, 1, 0),
+            ("0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f", "0x2222222222222222222222222222222222222222", 6, 18, 0, 12, 0),
+            (0,),
+            (60_802_612_732_225_340_289_900,),
+            (False, True),
+            (0, 0, 0, 0, 0),
+        ]
+        details = [
+            (1_916_50000000,),
+            (8_300, 0, 0),
+            (2_379_18000000,),
+            (8_000, 0, 0),
+            (1_00000000,),
+            (0, 0, 0),
+        ]
+        metadata = {
+            WETH: ("Wrapped Ether", "WETH"),
+            WSTETH: ("Wrapped stETH", "wstETH"),
+            "0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f": ("GHO", "GHO"),
+        }
+        account_data = (
+            0,
+            81_0000000000000000,
+            1_350000000000000000,
+            10_200_000 * 10**26,
+            60_802 * 10**26 * 10**27,
+            2,
+            1,
+        )
+        batch = AsyncMock(side_effect=[reserves_and_positions, details])
+        call = AsyncMock(
+            side_effect=[
+                reserve_count,
+                ("0x3333333333333333333333333333333333333333",),
+                account_data,
+            ]
+        )
+        with (
+            patch("routers.aave._aave_v4_rpc_batch", batch),
+            patch("routers.aave._aave_v4_rpc_call", call),
+            patch("routers.aave._erc20_metadata", AsyncMock(return_value=metadata)),
+        ):
+            rows = await _fetch_aave_v4_onchain_rows(object(), WALLET, 1)
+
+        self.assertEqual(len(rows), 3)
+        eth = next(row for row in rows if row["token_symbol"] == "ETH")
+        self.assertEqual(eth["supply_amount"], "51.38542096423438886")
+        self.assertEqual(eth["token_price_usd"], "1916.5")
+        self.assertEqual(eth["health_factor"], "1.35")
+        self.assertEqual(eth["market"], "Aave V4 Main")
+        decoded_position_id = base64.b64decode(eth["account_position_id"]).decode()
+        self.assertEqual(
+            decoded_position_id,
+            "1::0x94e7A5dCbE816e498b89aB752661904E2F56c485::"
+            "0xb0BC021DABA3f2d737bb529c7Eea2a783aE5208b",
+        )
+        gho = next(row for row in rows if row["token_symbol"] == "GHO")
+        self.assertEqual(gho["borrow_amount"], "60802.6127322253402899")
+        self.assertEqual(gho["supply_amount"], "")
 
     async def test_combines_v3_and_v4_rows(self):
         v3_row = {"position_id": "v3-row"}
