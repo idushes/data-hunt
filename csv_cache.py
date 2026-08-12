@@ -7,13 +7,14 @@ import secrets
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Awaitable, Callable
 from urllib.parse import parse_qsl, urlencode
 
 from fastapi import Request, Response
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import StreamingResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from redis_client import get_redis_client
 
@@ -36,7 +37,10 @@ class CachedCSVResponse:
     raw_headers: tuple[tuple[bytes, bytes], ...]
 
 
-class CSVCacheMiddleware(BaseHTTPMiddleware):
+RequestResponseEndpoint = Callable[[Request], Awaitable[Response]]
+
+
+class CSVCacheMiddleware:
     """Caches successful GET CSV responses in Redis with distributed single-flight.
 
     A bounded in-memory cache and local single-flight are retained only as a safe
@@ -49,16 +53,21 @@ class CSVCacheMiddleware(BaseHTTPMiddleware):
         ttl_seconds: int = 60,
         max_entries: int = 256,
         flight_timeout_seconds: int = 180,
+        stale_ttl_seconds: int = 86400,
+        refresh_timeout_seconds: float = 8,
         redis_client: Redis | None = None,
     ):
-        super().__init__(app)
+        self.app: ASGIApp = app
         self.ttl_seconds = max(60, ttl_seconds)
         self.max_entries = max(1, max_entries)
         self.flight_timeout_seconds = max(30, flight_timeout_seconds)
+        self.stale_ttl_seconds = max(3600, stale_ttl_seconds)
+        self.refresh_timeout_seconds = max(0.01, refresh_timeout_seconds)
         self._redis_client = redis_client
         self._cache: OrderedDict[str, CachedCSVResponse] = OrderedDict()
         self._inflight: dict[str, asyncio.Event] = {}
         self._inflight_lock = asyncio.Lock()
+        self._background_refreshes: set[asyncio.Task[Response]] = set()
         self._last_redis_warning = 0.0
 
     @staticmethod
@@ -84,6 +93,10 @@ class CSVCacheMiddleware(BaseHTTPMiddleware):
     @staticmethod
     def _redis_cache_key(key: str) -> str:
         return f"datahunt:csv:v1:{key}"
+
+    @staticmethod
+    def _redis_stale_key(key: str) -> str:
+        return f"datahunt:csv:stale:v1:{key}"
 
     @staticmethod
     def _redis_lock_key(key: str) -> str:
@@ -116,12 +129,20 @@ class CSVCacheMiddleware(BaseHTTPMiddleware):
         while len(self._cache) > self.max_entries:
             self._cache.popitem(last=False)
 
-    async def _get_redis(self, key: str) -> CachedCSVResponse | None:
+    async def _get_redis(
+        self,
+        key: str,
+        *,
+        stale: bool = False,
+    ) -> CachedCSVResponse | None:
         client = self._redis()
         if client is None:
             return None
         try:
-            payload = await client.hgetall(self._redis_cache_key(key))
+            redis_key = (
+                self._redis_stale_key(key) if stale else self._redis_cache_key(key)
+            )
+            payload = await client.hgetall(redis_key)
             if not payload:
                 return None
             body = payload.get(b"body") or payload.get("body")
@@ -165,16 +186,17 @@ class CSVCacheMiddleware(BaseHTTPMiddleware):
         )
         try:
             redis_key = self._redis_cache_key(key)
+            stale_key = self._redis_stale_key(key)
+            mapping = {
+                "body": cached.body,
+                "status_code": str(cached.status_code),
+                "headers": headers_payload,
+            }
             async with client.pipeline(transaction=True) as pipeline:
-                pipeline.hset(
-                    redis_key,
-                    mapping={
-                        "body": cached.body,
-                        "status_code": str(cached.status_code),
-                        "headers": headers_payload,
-                    },
-                )
+                pipeline.hset(redis_key, mapping=mapping)
                 pipeline.expire(redis_key, self.ttl_seconds)
+                pipeline.hset(stale_key, mapping=mapping)
+                pipeline.expire(stale_key, self.stale_ttl_seconds)
                 await pipeline.execute()
             return True
         except RedisError as exc:
@@ -235,15 +257,48 @@ class CSVCacheMiddleware(BaseHTTPMiddleware):
     def _response_from_cache(
         cached: CachedCSVResponse,
         backend: str,
+        cache_status: str = "HIT",
     ) -> Response:
         response = Response(content=cached.body, status_code=cached.status_code)
         response.raw_headers = list(cached.raw_headers)
-        response.headers["X-CSV-Cache"] = "HIT"
+        response.headers["X-CSV-Cache"] = cache_status
         response.headers["X-CSV-Cache-Backend"] = backend
         return response
 
+    def _retain_background_refresh(self, task: asyncio.Task[Response]) -> None:
+        self._background_refreshes.add(task)
+
+        def finished(completed: asyncio.Task[Response]) -> None:
+            self._background_refreshes.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                exc = completed.exception()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning("Background CSV refresh failed: %s", exc)
+                return
+            if exc is not None:
+                logger.warning("Background CSV refresh failed: %s", exc)
+
+        task.add_done_callback(finished)
+
+    async def _refresh_redis(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+        key: str,
+        lock_token: str,
+    ) -> Response:
+        try:
+            return await self._call_and_cache(request, call_next, key, "redis")
+        finally:
+            await self._release_redis_lock(key, lock_token)
+
     @staticmethod
     async def _read_body(response: StreamingResponse) -> bytes:
+        body = getattr(response, "body", None)
+        if isinstance(body, bytes):
+            return body
         chunks = []
         async for chunk in response.body_iterator:
             chunks.append(chunk.encode() if isinstance(chunk, str) else chunk)
@@ -257,11 +312,17 @@ class CSVCacheMiddleware(BaseHTTPMiddleware):
         backend: str,
     ) -> Response:
         response = await call_next(request)
+        body = await self._read_body(response)
         content_type = response.headers.get("content-type", "").lower()
         if response.status_code != 200 or not content_type.startswith("text/csv"):
-            return response
+            uncached_response = Response(
+                content=body,
+                status_code=response.status_code,
+                background=response.background,
+            )
+            uncached_response.raw_headers = list(response.raw_headers)
+            return uncached_response
 
-        body = await self._read_body(response)
         raw_headers = tuple(
             (header, value)
             for header, value in response.raw_headers
@@ -342,11 +403,14 @@ class CSVCacheMiddleware(BaseHTTPMiddleware):
         cached = await self._get_redis(key)
         if cached is not None:
             return self._response_from_cache(cached, "redis")
+        stale = await self._get_redis(key, stale=True)
 
         lock_token = await self._acquire_redis_lock(key)
         if lock_token is None:
             return await self._dispatch_memory(request, call_next, key)
         if lock_token == "":
+            if stale is not None:
+                return self._response_from_cache(stale, "redis", "STALE")
             cached = await self._wait_for_redis_flight(key)
             if cached is not None:
                 return self._response_from_cache(cached, "redis")
@@ -354,10 +418,70 @@ class CSVCacheMiddleware(BaseHTTPMiddleware):
             if not lock_token:
                 return await self._dispatch_memory(request, call_next, key)
 
+        refresh = asyncio.create_task(
+            self._refresh_redis(request, call_next, key, lock_token)
+        )
+        self._retain_background_refresh(refresh)
+        if stale is None:
+            return await refresh
+
         try:
-            return await self._call_and_cache(request, call_next, key, "redis")
-        finally:
-            await self._release_redis_lock(key, lock_token)
+            refreshed = await asyncio.wait_for(
+                asyncio.shield(refresh),
+                timeout=self.refresh_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return self._response_from_cache(stale, "redis", "STALE")
+        except Exception:
+            return self._response_from_cache(stale, "redis", "STALE")
+
+        if refreshed.status_code >= 500:
+            return self._response_from_cache(stale, "redis", "STALE")
+        return refreshed
+
+    async def _call_app(self, scope: Scope) -> Response:
+        response_start: Message | None = None
+        chunks: list[bytes] = []
+        request_sent = False
+
+        async def receive() -> Message:
+            nonlocal request_sent
+            if not request_sent:
+                request_sent = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.disconnect"}
+
+        async def send(message: Message) -> None:
+            nonlocal response_start
+            if message["type"] == "http.response.start":
+                response_start = message
+            elif message["type"] == "http.response.body":
+                body = message.get("body", b"")
+                if body:
+                    chunks.append(body)
+
+        await self.app(scope, receive, send)
+        if response_start is None:
+            raise RuntimeError("Cached route did not start an HTTP response")
+        response = Response(
+            content=b"".join(chunks),
+            status_code=response_start["status"],
+        )
+        response.raw_headers = list(response_start.get("headers", []))
+        return response
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method", "").upper() != "GET":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+
+        async def call_next(_: Request) -> Response:
+            return await self._call_app(scope)
+
+        response = await self.dispatch(request, call_next)
+        await response(scope, receive, send)
 
 
 # Backward-compatible import for existing integrations and tests.

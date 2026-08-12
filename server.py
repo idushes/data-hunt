@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import (
     CSV_CACHE_FLIGHT_TIMEOUT_SECONDS,
     CSV_CACHE_MAX_ENTRIES,
+    CSV_CACHE_REFRESH_TIMEOUT_SECONDS,
+    CSV_CACHE_STALE_TTL_SECONDS,
     CSV_CACHE_TTL_SECONDS,
     PORT,
     VALUE_RATE_LIMIT_AUTHENTICATED,
@@ -110,6 +112,8 @@ app.add_middleware(
     ttl_seconds=CSV_CACHE_TTL_SECONDS,
     max_entries=CSV_CACHE_MAX_ENTRIES,
     flight_timeout_seconds=CSV_CACHE_FLIGHT_TIMEOUT_SECONDS,
+    stale_ttl_seconds=CSV_CACHE_STALE_TTL_SECONDS,
+    refresh_timeout_seconds=CSV_CACHE_REFRESH_TIMEOUT_SECONDS,
 )
 app.add_middleware(
     ValueRateLimitMiddleware,

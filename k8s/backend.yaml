@@ -41,6 +41,10 @@ spec:
               value: "2"
             - name: CSV_CACHE_FLIGHT_TIMEOUT_SECONDS
               value: "180"
+            - name: CSV_CACHE_STALE_TTL_SECONDS
+              value: "86400"
+            - name: CSV_CACHE_REFRESH_TIMEOUT_SECONDS
+              value: "8"
             - name: VALUE_RATE_LIMIT_WINDOW_SECONDS
               value: "60"
             - name: VALUE_RATE_LIMIT_AUTHENTICATED

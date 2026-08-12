@@ -1,4 +1,5 @@
 import asyncio
+import time
 import unittest
 
 import httpx
@@ -13,6 +14,7 @@ class FakeRedis:
     def __init__(self):
         self.hashes: dict[str, dict[bytes, bytes]] = {}
         self.values: dict[str, bytes] = {}
+        self.expirations: dict[str, int] = {}
 
     async def hgetall(self, key: str):
         return self.hashes.get(key, {}).copy()
@@ -26,6 +28,7 @@ class FakeRedis:
         }
 
     async def expire(self, key: str, seconds: int):
+        self.expirations[key] = seconds
         return key in self.hashes
 
     def pipeline(self, transaction=True):
@@ -290,6 +293,12 @@ class CSVRedisCacheTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.headers["x-csv-cache-backend"], "redis")
         self.assertEqual(first_calls["count"], 1)
         self.assertEqual(second_calls["count"], 0)
+        cache_keys = list(redis.hashes)
+        self.assertEqual(len(cache_keys), 2)
+        fresh_key = next(key for key in cache_keys if ":stale:" not in key)
+        stale_key = next(key for key in cache_keys if ":stale:" in key)
+        self.assertEqual(redis.expirations[fresh_key], 60)
+        self.assertEqual(redis.expirations[stale_key], 86400)
 
     async def test_distributed_single_flight_coalesces_instances(self):
         redis = FakeRedis()
@@ -334,6 +343,93 @@ class CSVRedisCacheTest(unittest.IsolatedAsyncioTestCase):
             sorted([first.headers["x-csv-cache"], second.headers["x-csv-cache"]]),
             ["HIT", "MISS"],
         )
+
+    async def test_returns_stale_before_slow_refresh_finishes_and_updates_caches(self):
+        redis = FakeRedis()
+        app = FastAPI()
+        calls = 0
+        value = "old"
+        release_refresh = asyncio.Event()
+        app.add_middleware(
+            CSVCacheMiddleware,
+            ttl_seconds=60,
+            stale_ttl_seconds=86400,
+            refresh_timeout_seconds=0.02,
+            redis_client=redis,
+        )
+
+        @app.get("/slow.csv")
+        async def slow_csv():
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                await release_refresh.wait()
+            return Response(content=f"value\n{value}\n", media_type="text/csv")
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            first = await client.get("/slow.csv")
+            fresh_key = next(key for key in redis.hashes if ":stale:" not in key)
+            redis.hashes.pop(fresh_key)
+            value = "new"
+
+            started_at = time.monotonic()
+            stale = await client.get("/slow.csv")
+            stale_elapsed = time.monotonic() - started_at
+            self.assertEqual(stale.text, "value\nold\n")
+            self.assertEqual(stale.headers["x-csv-cache"], "STALE")
+            self.assertLess(stale_elapsed, 0.1)
+            self.assertEqual(calls, 2)
+
+            release_refresh.set()
+            for _ in range(20):
+                await asyncio.sleep(0.01)
+                if fresh_key in redis.hashes:
+                    break
+            refreshed = await client.get("/slow.csv")
+
+        self.assertEqual(first.headers["x-csv-cache"], "MISS")
+        self.assertEqual(refreshed.text, "value\nnew\n")
+        self.assertEqual(refreshed.headers["x-csv-cache"], "HIT")
+        self.assertEqual(calls, 2)
+
+    async def test_returns_stale_when_refresh_fails(self):
+        redis = FakeRedis()
+        app = FastAPI()
+        failing = False
+        app.add_middleware(
+            CSVCacheMiddleware,
+            ttl_seconds=60,
+            stale_ttl_seconds=86400,
+            refresh_timeout_seconds=0.05,
+            redis_client=redis,
+        )
+
+        @app.get("/failure.csv")
+        async def failure_csv():
+            if failing:
+                return Response(
+                    content="error\nunavailable\n",
+                    status_code=502,
+                    media_type="text/csv",
+                )
+            return Response(content="value\n42\n", media_type="text/csv")
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            await client.get("/failure.csv")
+            fresh_key = next(key for key in redis.hashes if ":stale:" not in key)
+            redis.hashes.pop(fresh_key)
+            failing = True
+            response = await client.get("/failure.csv")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "value\n42\n")
+        self.assertEqual(response.headers["x-csv-cache"], "STALE")
 
 
 if __name__ == "__main__":
