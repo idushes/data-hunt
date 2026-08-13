@@ -4,6 +4,7 @@ import io
 import json
 import os
 import unittest
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
@@ -11,6 +12,8 @@ from fastapi import HTTPException
 from bybit_capsule import decrypt_bybit_credentials, encrypt_bybit_credentials
 from routers.bybit import (
     _api_base_url,
+    _fetch_funding_balances,
+    _fetch_spot_usd_prices,
     _render_bybit_csv,
     _signed_headers,
     create_bybit_capsule,
@@ -125,8 +128,87 @@ class BybitCsvTest(unittest.TestCase):
         self.assertEqual(rows[2]["side"], "long")
         self.assertEqual(rows[2]["unrealised_pnl"], "100")
 
+    def test_renders_total_and_funding_balances(self):
+        account = {
+            "accountType": "UNIFIED",
+            "totalEquity": "100.5",
+            "coin": [],
+        }
+        funding = [
+            {"coin": "USDT", "walletBalance": "236", "transferBalance": "236"},
+            {"coin": "BTC", "walletBalance": "0.01", "transferBalance": "0"},
+        ]
+
+        rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    _render_bybit_csv(
+                        account,
+                        [],
+                        funding,
+                        {"BTC": Decimal("70000")},
+                    )
+                )
+            )
+        )
+
+        self.assertEqual(rows[0]["id"], "bybit:total")
+        self.assertEqual(rows[0]["total_equity_usd"], "1036.50")
+        self.assertEqual(rows[1]["id"], "bybit:unified")
+        self.assertEqual(rows[2]["id"], "bybit:funding:balance:USDT")
+        self.assertEqual(rows[2]["usd_value"], "236")
+        self.assertEqual(rows[3]["id"], "bybit:funding:balance:BTC")
+        self.assertEqual(rows[3]["usd_value"], "700.00")
+
 
 class BybitRouteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fetches_funding_and_public_spot_prices(self):
+        with patch(
+            "routers.bybit._get_bybit_json",
+            AsyncMock(
+                return_value={
+                    "result": {
+                        "balance": [{"coin": "USDT", "walletBalance": "2"}]
+                    }
+                }
+            ),
+        ) as signed:
+            balances = await _fetch_funding_balances(
+                object(), "https://api.bybit.com", "key", "secret"
+            )
+
+        self.assertEqual(balances[0]["coin"], "USDT")
+        signed.assert_awaited_once_with(
+            unittest.mock.ANY,
+            "https://api.bybit.com",
+            "/v5/asset/transfer/query-account-coins-balance",
+            "key",
+            "secret",
+            {"accountType": "FUND"},
+        )
+
+        with patch(
+            "routers.bybit._get_bybit_public_json",
+            AsyncMock(
+                return_value={
+                    "result": {
+                        "list": [
+                            {
+                                "symbol": "BTCUSDT",
+                                "lastPrice": "69900",
+                                "usdIndexPrice": "70000",
+                            }
+                        ]
+                    }
+                }
+            ),
+        ):
+            prices = await _fetch_spot_usd_prices(
+                object(), "https://api.bybit.com"
+            )
+
+        self.assertEqual(prices["BTC"], Decimal("70000"))
+
     async def test_capsule_requires_read_only_validation(self):
         request = BybitCapsuleRequest(
             api_key="api-key",
@@ -156,6 +238,7 @@ class BybitRouteTest(unittest.IsolatedAsyncioTestCase):
             {"api_key": "api-key", "api_secret": "api-secret"},
         )()
         account = {"accountType": "UNIFIED", "totalEquity": "10", "coin": []}
+        funding = [{"coin": "USDT", "walletBalance": "2"}]
         with (
             patch("routers.bybit.decrypt_bybit_credentials", return_value=credentials),
             patch(
@@ -166,13 +249,24 @@ class BybitRouteTest(unittest.IsolatedAsyncioTestCase):
                 "routers.bybit._fetch_position_category",
                 AsyncMock(return_value=[]),
             ) as fetch_positions,
+            patch(
+                "routers.bybit._fetch_funding_balances",
+                AsyncMock(return_value=funding),
+            ) as fetch_funding,
+            patch(
+                "routers.bybit._fetch_spot_usd_prices",
+                AsyncMock(return_value={}),
+            ) as fetch_prices,
         ):
             response = await get_bybit_account_csv(
                 "dhb1.v1.encrypted", "global", True
             )
 
         self.assertEqual(fetch_positions.await_count, 3)
+        fetch_funding.assert_awaited_once()
+        fetch_prices.assert_awaited_once()
         self.assertEqual(response.media_type, "text/csv")
+        self.assertIn("bybit:total", response.body.decode())
         self.assertIn("bybit:unified", response.body.decode())
 
 

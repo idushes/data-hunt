@@ -158,6 +158,30 @@ async def _get_bybit_json(
     return payload
 
 
+async def _get_bybit_public_json(
+    client: httpx.AsyncClient,
+    base_url: str,
+    path: str,
+    params: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    response = await client.get(
+        f"{base_url}{path}",
+        params=params,
+        headers={"Accept": "application/json"},
+    )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Bybit returned invalid JSON") from exc
+
+    if response.status_code >= 400 or not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Invalid Bybit API response")
+    if payload.get("retCode") != 0:
+        message = str(payload.get("retMsg") or "Unknown Bybit API error")
+        raise HTTPException(status_code=502, detail=f"Bybit API error: {message}")
+    return payload
+
+
 async def _validate_view_only_credentials(
     client: httpx.AsyncClient,
     base_url: str,
@@ -202,6 +226,62 @@ async def _fetch_wallet_balance(
     if not isinstance(accounts, list) or not accounts or not isinstance(accounts[0], dict):
         raise HTTPException(status_code=502, detail="Invalid Bybit wallet response")
     return accounts[0]
+
+
+async def _fetch_funding_balances(
+    client: httpx.AsyncClient,
+    base_url: str,
+    api_key: str,
+    api_secret: str,
+) -> list[dict[str, Any]]:
+    payload = await _get_bybit_json(
+        client,
+        base_url,
+        "/v5/asset/transfer/query-account-coins-balance",
+        api_key,
+        api_secret,
+        {"accountType": "FUND"},
+    )
+    result = payload.get("result")
+    balances = result.get("balance") if isinstance(result, dict) else None
+    if not isinstance(balances, list) or not all(
+        isinstance(item, dict) for item in balances
+    ):
+        raise HTTPException(status_code=502, detail="Invalid Bybit Funding response")
+    return balances
+
+
+async def _fetch_spot_usd_prices(
+    client: httpx.AsyncClient,
+    base_url: str,
+) -> dict[str, Decimal]:
+    payload = await _get_bybit_public_json(
+        client,
+        base_url,
+        "/v5/market/tickers",
+        {"category": "spot"},
+    )
+    result = payload.get("result")
+    tickers = result.get("list") if isinstance(result, dict) else None
+    if not isinstance(tickers, list):
+        raise HTTPException(status_code=502, detail="Invalid Bybit ticker response")
+
+    prices: dict[str, Decimal] = {}
+    for ticker in tickers:
+        if not isinstance(ticker, dict):
+            continue
+        symbol = _string(ticker.get("symbol")).upper()
+        quote = next(
+            (candidate for candidate in ("USDT", "USDC") if symbol.endswith(candidate)),
+            "",
+        )
+        coin = symbol[: -len(quote)] if quote else ""
+        price = _decimal(ticker.get("usdIndexPrice")) or _decimal(
+            ticker.get("lastPrice")
+        )
+        if coin and price > 0:
+            prices.setdefault(coin, price)
+    return prices
 
 
 async def _fetch_position_category(
@@ -268,11 +348,64 @@ def _empty_row() -> dict[str, str]:
     return {column: "" for column in BYBIT_CSV_HEADER}
 
 
+def _funding_usd_value(
+    coin: str,
+    balance: Decimal,
+    prices: dict[str, Decimal],
+) -> Decimal | None:
+    if coin in {"USD", "USDC", "USDT"}:
+        return balance
+    price = prices.get(coin)
+    return balance * price if price is not None else None
+
+
 def _render_bybit_csv(
     account: dict[str, Any],
     positions: list[tuple[str, dict[str, Any]]],
+    funding_balances: list[dict[str, Any]] | None = None,
+    spot_usd_prices: dict[str, Decimal] | None = None,
 ) -> str:
     rows: list[dict[str, str]] = []
+    funding_rows: list[dict[str, str]] = []
+    funding_total_usd = Decimal(0)
+
+    if funding_balances is not None:
+        prices = spot_usd_prices or {}
+        for item in funding_balances:
+            coin = _string(item.get("coin")).upper()
+            wallet_balance = _decimal(item.get("walletBalance"))
+            if not coin or wallet_balance == 0:
+                continue
+            usd_value = _funding_usd_value(coin, wallet_balance, prices)
+            if usd_value is not None:
+                funding_total_usd += usd_value
+            row = _empty_row()
+            row.update(
+                {
+                    "row_type": "funding_balance",
+                    "id": f"bybit:funding:balance:{coin}",
+                    "account_type": "FUND",
+                    "coin": coin,
+                    "equity": _string(item.get("walletBalance")),
+                    "usd_value": _string(usd_value),
+                    "wallet_balance": _string(item.get("walletBalance")),
+                }
+            )
+            funding_rows.append(row)
+
+        total = _empty_row()
+        total.update(
+            {
+                "row_type": "account_summary",
+                "id": "bybit:total",
+                "account_type": "ALL_WALLETS",
+                "total_equity_usd": _string(
+                    _decimal(account.get("totalEquity")) + funding_total_usd
+                ),
+            }
+        )
+        rows.append(total)
+
     summary = _empty_row()
     summary.update(
         {
@@ -324,6 +457,8 @@ def _render_bybit_csv(
                 }
             )
             rows.append(row)
+
+    rows.extend(funding_rows)
 
     for category, position in positions:
         size = _decimal(position.get("size"))
@@ -404,8 +539,8 @@ async def create_bybit_capsule(request: BybitCapsuleRequest):
     "/account.csv",
     summary="Export Bybit balances and positions",
     description=(
-        "Returns a Unified Account summary, non-zero coin balances, and open "
-        "linear/inverse positions using an encrypted Read-only access key."
+        "Returns total Unified and Funding wallet value, their non-zero coin "
+        "balances, and open linear/inverse positions using an encrypted Read-only key."
     ),
     responses={200: {"content": {"text/csv": {}}}},
 )
@@ -426,6 +561,10 @@ async def get_bybit_account_csv(
         account = await _fetch_wallet_balance(
             client, base_url, credentials.api_key, credentials.api_secret
         )
+        funding_balances = await _fetch_funding_balances(
+            client, base_url, credentials.api_key, credentials.api_secret
+        )
+        spot_usd_prices = await _fetch_spot_usd_prices(client, base_url)
         positions: list[tuple[str, dict[str, Any]]] = []
         if include_positions:
             linear_usdt = await _fetch_position_category(
@@ -456,6 +595,11 @@ async def get_bybit_account_csv(
             positions.extend(("inverse", item) for item in inverse)
 
     return Response(
-        content=_render_bybit_csv(account, positions),
+        content=_render_bybit_csv(
+            account,
+            positions,
+            funding_balances,
+            spot_usd_prices,
+        ),
         media_type="text/csv",
     )
