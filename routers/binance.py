@@ -124,6 +124,39 @@ async def _get_signed_json(
     return payload
 
 
+async def _post_signed_json(
+    client: httpx.AsyncClient,
+    base_url: str,
+    path: str,
+    api_key: str,
+    api_secret: str,
+    params: dict[str, object] | None = None,
+) -> object:
+    response = await client.post(
+        f"{base_url}{path}",
+        content=_signed_query(api_secret, params),
+        headers={
+            "X-MBX-APIKEY": api_key,
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Binance returned invalid JSON") from exc
+
+    if response.status_code >= 400:
+        status_code = response.status_code
+        if status_code not in {400, 401, 403, 418, 429}:
+            status_code = 502
+        raise HTTPException(
+            status_code=status_code,
+            detail=f"Binance API error: {_binance_error(payload, f'HTTP {response.status_code}')}",
+        )
+    return payload
+
+
 async def _get_public_json(
     client: httpx.AsyncClient,
     base_url: str,
@@ -230,6 +263,46 @@ async def _fetch_futures_account(
     return payload
 
 
+async def _fetch_wallet_balances(
+    client: httpx.AsyncClient,
+    api_key: str,
+    api_secret: str,
+) -> list[dict[str, Any]]:
+    payload = await _get_signed_json(
+        client,
+        BINANCE_SPOT_BASE_URL,
+        "/sapi/v1/asset/wallet/balance",
+        api_key,
+        api_secret,
+        {"quoteAsset": "USDT"},
+    )
+    if not isinstance(payload, list) or not all(
+        isinstance(item, dict) for item in payload
+    ):
+        raise HTTPException(status_code=502, detail="Invalid Binance Wallet response")
+    return payload
+
+
+async def _fetch_funding_assets(
+    client: httpx.AsyncClient,
+    api_key: str,
+    api_secret: str,
+) -> list[dict[str, Any]]:
+    payload = await _post_signed_json(
+        client,
+        BINANCE_SPOT_BASE_URL,
+        "/sapi/v1/asset/get-funding-asset",
+        api_key,
+        api_secret,
+        {"needBtcValuation": "false"},
+    )
+    if not isinstance(payload, list) or not all(
+        isinstance(item, dict) for item in payload
+    ):
+        raise HTTPException(status_code=502, detail="Invalid Binance Funding response")
+    return payload
+
+
 def _string(value: object | None) -> str:
     if value is None:
         return ""
@@ -285,10 +358,51 @@ def _render_binance_csv(
     spot_account: dict[str, Any],
     prices: dict[str, Decimal],
     futures_account: dict[str, Any] | None,
+    wallet_balances: list[dict[str, Any]] | None = None,
+    funding_assets: list[dict[str, Any]] | None = None,
 ) -> str:
     rows: list[dict[str, str]] = []
     spot_rows: list[dict[str, str]] = []
     spot_total = Decimal(0)
+
+    if wallet_balances is not None:
+        wallet_total = sum(
+            (
+                _decimal(wallet.get("balance"))
+                for wallet in wallet_balances
+                if wallet.get("activate") is not False
+            ),
+            Decimal(0),
+        )
+        total_summary = _empty_row()
+        total_summary.update(
+            {
+                "row_type": "account_summary",
+                "id": "binance:total",
+                "account_type": "all_wallets",
+                "asset": "USDT",
+                "total_equity_usd": _decimal_string(wallet_total),
+            }
+        )
+        rows.append(total_summary)
+
+        for wallet in wallet_balances:
+            wallet_name = _string(wallet.get("walletName")).strip()
+            wallet_balance = _decimal(wallet.get("balance"))
+            if not wallet_name or wallet_balance == 0:
+                continue
+            wallet_id = "-".join(wallet_name.lower().split())
+            wallet_row = _empty_row()
+            wallet_row.update(
+                {
+                    "row_type": "wallet_summary",
+                    "id": f"binance:wallet:{wallet_id}",
+                    "account_type": wallet_id,
+                    "asset": "USDT",
+                    "total_equity_usd": _decimal_string(wallet_balance),
+                }
+            )
+            rows.append(wallet_row)
 
     for balance in spot_account.get("balances", []):
         if not isinstance(balance, dict):
@@ -330,6 +444,37 @@ def _render_binance_csv(
     )
     rows.append(summary)
     rows.extend(spot_rows)
+
+    if funding_assets is not None:
+        for balance in funding_assets:
+            asset = _string(balance.get("asset")).upper()
+            free = _decimal(balance.get("free"))
+            locked = _decimal(balance.get("locked"))
+            total = (
+                free
+                + locked
+                + _decimal(balance.get("freeze"))
+                + _decimal(balance.get("withdrawing"))
+            )
+            if not asset or total == 0:
+                continue
+            usd_value = _asset_usd_value(asset, total, prices)
+            row = _empty_row()
+            row.update(
+                {
+                    "row_type": "funding_balance",
+                    "id": f"binance:funding:balance:{asset}",
+                    "account_type": "funding",
+                    "asset": asset,
+                    "free": _decimal_string(free),
+                    "locked": _decimal_string(locked),
+                    "total": _decimal_string(total),
+                    "usd_value": (
+                        _decimal_string(usd_value) if usd_value is not None else ""
+                    ),
+                }
+            )
+            rows.append(row)
 
     if futures_account is not None:
         futures_summary = _empty_row()
@@ -456,8 +601,8 @@ async def create_binance_capsule(request: BinanceCapsuleRequest):
     "/account.csv",
     summary="Export Binance balances and positions",
     description=(
-        "Returns non-zero Spot balances with estimated USD values and, when "
-        "available, USD-M Futures balances and open positions."
+        "Returns the total Binance wallet value, non-zero Spot and Funding "
+        "balances, and, when available, USD-M Futures balances and positions."
     ),
     responses={200: {"content": {"text/csv": {}}}},
 )
@@ -477,6 +622,12 @@ async def get_binance_account_csv(
             client, credentials.api_key, credentials.api_secret
         )
         prices = await _fetch_spot_prices(client)
+        wallet_balances = await _fetch_wallet_balances(
+            client, credentials.api_key, credentials.api_secret
+        )
+        funding_assets = await _fetch_funding_assets(
+            client, credentials.api_key, credentials.api_secret
+        )
         futures_account: dict[str, Any] | None = None
         if include_futures:
             try:
@@ -488,6 +639,12 @@ async def get_binance_account_csv(
                     raise
 
     return Response(
-        content=_render_binance_csv(spot_account, prices, futures_account),
+        content=_render_binance_csv(
+            spot_account,
+            prices,
+            futures_account,
+            wallet_balances,
+            funding_assets,
+        ),
         media_type="text/csv",
     )

@@ -13,6 +13,7 @@ from binance_capsule import decrypt_binance_credentials, encrypt_binance_credent
 from routers.binance import (
     BinanceCapsuleRequest,
     _asset_usd_value,
+    _fetch_funding_assets,
     _render_binance_csv,
     _signed_query,
     _validate_read_only_credentials,
@@ -185,8 +186,63 @@ class BinanceCsvTest(unittest.TestCase):
         self.assertEqual(rows[-1]["id"], "binance:futures:position:BTCUSDT:BOTH")
         self.assertEqual(rows[-1]["side"], "long")
 
+    def test_renders_total_wallet_and_funding_balances(self):
+        rows = list(
+            csv.DictReader(
+                io.StringIO(
+                    _render_binance_csv(
+                        {"balances": [], "updateTime": 0},
+                        {},
+                        None,
+                        [
+                            {"activate": True, "balance": "0.69541884", "walletName": "Spot"},
+                            {"activate": True, "balance": "236", "walletName": "Funding"},
+                            {"activate": False, "balance": "999", "walletName": "Inactive"},
+                        ],
+                        [
+                            {
+                                "asset": "USDT",
+                                "free": "236.00000095",
+                                "locked": "0",
+                                "freeze": "0",
+                                "withdrawing": "0",
+                            }
+                        ],
+                    )
+                )
+            )
+        )
+
+        self.assertEqual(rows[0]["id"], "binance:total")
+        self.assertEqual(rows[0]["total_equity_usd"], "236.69541884")
+        self.assertEqual(rows[1]["id"], "binance:wallet:spot")
+        self.assertEqual(rows[2]["id"], "binance:wallet:funding")
+        funding = next(row for row in rows if row["row_type"] == "funding_balance")
+        self.assertEqual(funding["id"], "binance:funding:balance:USDT")
+        self.assertEqual(funding["total"], "236.00000095")
+        self.assertEqual(funding["usd_value"], "236.00000095")
+
 
 class BinanceRouteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_funding_uses_signed_form_post(self):
+        with patch(
+            "routers.binance._post_signed_json",
+            AsyncMock(return_value=[{"asset": "USDT", "free": "1"}]),
+        ) as post_signed:
+            result = await _fetch_funding_assets(
+                object(), "api-key", "api-secret"
+            )
+
+        self.assertEqual(result[0]["asset"], "USDT")
+        post_signed.assert_awaited_once_with(
+            unittest.mock.ANY,
+            "https://api.binance.com",
+            "/sapi/v1/asset/get-funding-asset",
+            "api-key",
+            "api-secret",
+            {"needBtcValuation": "false"},
+        )
+
     async def test_capsule_requires_read_only_validation(self):
         request = BinanceCapsuleRequest(api_key="api-key", api_secret="api-secret")
         with (
@@ -213,6 +269,8 @@ class BinanceRouteTest(unittest.IsolatedAsyncioTestCase):
         )()
         spot = {"balances": [], "updateTime": 0}
         futures = {"assets": [], "positions": []}
+        wallets = [{"activate": True, "balance": "236", "walletName": "Funding"}]
+        funding = [{"asset": "USDT", "free": "236", "locked": "0"}]
         with (
             patch(
                 "routers.binance.decrypt_binance_credentials",
@@ -225,6 +283,14 @@ class BinanceRouteTest(unittest.IsolatedAsyncioTestCase):
                 "routers.binance._fetch_spot_prices", AsyncMock(return_value={})
             ) as fetch_prices,
             patch(
+                "routers.binance._fetch_wallet_balances",
+                AsyncMock(return_value=wallets),
+            ) as fetch_wallets,
+            patch(
+                "routers.binance._fetch_funding_assets",
+                AsyncMock(return_value=funding),
+            ) as fetch_funding,
+            patch(
                 "routers.binance._fetch_futures_account",
                 AsyncMock(return_value=futures),
             ) as fetch_futures,
@@ -233,8 +299,11 @@ class BinanceRouteTest(unittest.IsolatedAsyncioTestCase):
 
         fetch_spot.assert_awaited_once()
         fetch_prices.assert_awaited_once()
+        fetch_wallets.assert_awaited_once()
+        fetch_funding.assert_awaited_once()
         fetch_futures.assert_awaited_once()
         self.assertEqual(response.media_type, "text/csv")
+        self.assertIn("binance:total", response.body.decode())
         self.assertIn("binance:spot", response.body.decode())
 
 
