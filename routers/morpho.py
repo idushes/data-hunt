@@ -1,7 +1,7 @@
 import csv
 import io
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
 import httpx
@@ -132,6 +132,16 @@ def _format_decimal(value: Decimal) -> str:
     return "0" if value == 0 else format(value.normalize(), "f")
 
 
+def _token_amount(value: object | None, decimals: object | None) -> Decimal:
+    amount = _decimal(value)
+    token_decimals = int(_decimal(decimals))
+    if token_decimals < 0 or token_decimals > 255:
+        return amount
+    with localcontext() as context:
+        context.prec = max(78, len(amount.as_tuple().digits) + token_decimals)
+        return amount / (Decimal(10) ** token_decimals)
+
+
 def _apy_percent(value: object | None) -> str:
     return _format_decimal(_decimal(value) * Decimal(100))
 
@@ -181,6 +191,15 @@ def _parse_market_rows(
         supply_usd = _decimal(state.get("supplyAssetsUsd"))
         borrow_usd = _decimal(state.get("borrowAssetsUsd"))
         collateral_usd = _decimal(state.get("collateralUsd"))
+        supply_amount = _token_amount(
+            state.get("supplyAssets"), loan_asset.get("decimals")
+        )
+        borrow_amount = _token_amount(
+            state.get("borrowAssets"), loan_asset.get("decimals")
+        )
+        collateral_amount = _token_amount(
+            state.get("collateral"), collateral_asset.get("decimals")
+        )
         row = _base_row(wallet, chain_id)
         row.update(
             {
@@ -193,17 +212,17 @@ def _parse_market_rows(
                 ).lower(),
                 "collateral_symbol": _text(collateral_asset.get("symbol")),
                 "collateral_name": _text(collateral_asset.get("name")),
-                "supply_amount": _text(state.get("supplyAssets")),
+                "supply_amount": _format_decimal(supply_amount),
                 "supply_usd": _format_decimal(supply_usd),
                 "supply_apy_percent": _apy_percent(
                     market_state.get("supplyApy")
                 ),
-                "borrow_amount": _text(state.get("borrowAssets")),
+                "borrow_amount": _format_decimal(borrow_amount),
                 "borrow_usd": _format_decimal(borrow_usd),
                 "borrow_apy_percent": _apy_percent(
                     market_state.get("borrowApy")
                 ),
-                "collateral_amount": _text(state.get("collateral")),
+                "collateral_amount": _format_decimal(collateral_amount),
                 "collateral_usd": _format_decimal(collateral_usd),
                 "net_usd": _format_decimal(
                     supply_usd + collateral_usd - borrow_usd
@@ -234,6 +253,8 @@ def _parse_vault_rows(
         if not address:
             continue
         assets_usd = _decimal(state.get("assetsUsd"))
+        asset = _dict(vault.get("asset"))
+        display_assets = _token_amount(assets, asset.get("decimals"))
         row = _base_row(wallet, chain_id)
         row.update(
             {
@@ -242,8 +263,8 @@ def _parse_vault_rows(
                 "vault_address": address,
                 "vault_name": _text(vault.get("name")),
                 "vault_symbol": _text(vault.get("symbol")),
-                **_asset_fields(_dict(vault.get("asset"))),
-                "supply_amount": _format_decimal(assets),
+                **_asset_fields(asset),
+                "supply_amount": _format_decimal(display_assets),
                 "supply_usd": _format_decimal(assets_usd),
                 "supply_apy_percent": _apy_percent(
                     _dict(vault.get("state")).get("netApy")

@@ -42,11 +42,11 @@ def _payload():
                         "state": {"supplyApy": "0.025", "borrowApy": "0.04"},
                     },
                     "state": {
-                        "supplyAssets": "100",
+                        "supplyAssets": "100000000",
                         "supplyAssetsUsd": "100",
-                        "borrowAssets": "25",
+                        "borrowAssets": "25000000",
                         "borrowAssetsUsd": "25",
-                        "collateral": "0.1",
+                        "collateral": "100000000000000000",
                         "collateralUsd": "300",
                     },
                 },
@@ -69,11 +69,12 @@ def _payload():
                             "address": USDC,
                             "symbol": "USDC",
                             "name": "USD Coin",
+                            "decimals": 6,
                         },
                         "state": {"netApy": "0.031"},
                     },
                     "state": {
-                        "assets": "500",
+                        "assets": "500000000",
                         "assetsUsd": "500",
                         "shares": "490",
                     },
@@ -93,10 +94,25 @@ class MorphoParserTest(unittest.TestCase):
         self.assertEqual(market["position_id"], f"market:1:{MARKET}")
         self.assertEqual(market["supply_apy_percent"], "2.5")
         self.assertEqual(market["borrow_apy_percent"], "4")
+        self.assertEqual(market["supply_amount"], "100")
+        self.assertEqual(market["borrow_amount"], "25")
+        self.assertEqual(market["collateral_amount"], "0.1")
         self.assertEqual(market["net_usd"], "375")
         vault = next(row for row in rows if row["position_type"] == "vault_v1")
+        self.assertEqual(vault["supply_amount"], "500")
         self.assertEqual(vault["supply_usd"], "500")
         self.assertEqual(vault["supply_apy_percent"], "3.1")
+
+    def test_normalizes_18_decimal_vault_assets(self):
+        payload = _payload()
+        position = payload["userByAddress"]["vaultPositions"][0]
+        position["vault"]["asset"]["decimals"] = 18
+        position["state"]["assets"] = "13002885520339213774921"
+
+        rows = _parse_rows(WALLET, 1, payload)
+        vault = next(row for row in rows if row["position_type"] == "vault_v1")
+
+        self.assertEqual(vault["supply_amount"], "13002.885520339213774921")
 
 
 class MorphoFetchTest(unittest.IsolatedAsyncioTestCase):
