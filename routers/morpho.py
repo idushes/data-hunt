@@ -46,6 +46,7 @@ MORPHO_CSV_HEADER = [
     "supply_amount",
     "supply_usd",
     "supply_apy_percent",
+    "net_apy_percent",
     "borrow_amount",
     "borrow_usd",
     "borrow_apy_percent",
@@ -91,6 +92,7 @@ query MorphoPositions($address: String!, $chainId: Int!) {
         name
         symbol
         asset { address symbol name decimals }
+        netApy
       }
       assets
       assetsUsd
@@ -255,6 +257,11 @@ def _parse_vault_rows(
         assets_usd = _decimal(state.get("assetsUsd"))
         asset = _dict(vault.get("asset"))
         display_assets = _token_amount(assets, asset.get("decimals"))
+        net_apy = (
+            _dict(vault.get("state")).get("netApy")
+            if version == "v1"
+            else vault.get("netApy")
+        )
         row = _base_row(wallet, chain_id)
         row.update(
             {
@@ -266,11 +273,8 @@ def _parse_vault_rows(
                 **_asset_fields(asset),
                 "supply_amount": _format_decimal(display_assets),
                 "supply_usd": _format_decimal(assets_usd),
-                "supply_apy_percent": _apy_percent(
-                    _dict(vault.get("state")).get("netApy")
-                )
-                if version == "v1"
-                else "",
+                "supply_apy_percent": _apy_percent(net_apy),
+                "net_apy_percent": _apy_percent(net_apy),
                 "shares": _text(state.get("shares")),
                 "net_usd": _format_decimal(assets_usd),
             }

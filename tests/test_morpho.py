@@ -80,7 +80,25 @@ def _payload():
                     },
                 }
             ],
-            "vaultV2Positions": [],
+            "vaultV2Positions": [
+                {
+                    "vault": {
+                        "address": "0x" + "ab" * 20,
+                        "name": "Alpha USDC Core V2",
+                        "symbol": "alphaUSDC",
+                        "asset": {
+                            "address": USDC,
+                            "symbol": "USDC",
+                            "name": "USD Coin",
+                            "decimals": 6,
+                        },
+                        "netApy": "0.1198",
+                    },
+                    "assets": "7000000000",
+                    "assetsUsd": "7000",
+                    "shares": "6900000000",
+                }
+            ],
         }
     }
 
@@ -89,7 +107,7 @@ class MorphoParserTest(unittest.TestCase):
     def test_parses_active_market_and_vault_positions(self):
         rows = _parse_rows(WALLET, 1, _payload())
 
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         market = next(row for row in rows if row["position_type"] == "market")
         self.assertEqual(market["position_id"], f"market:1:{MARKET}")
         self.assertEqual(market["supply_apy_percent"], "2.5")
@@ -102,6 +120,13 @@ class MorphoParserTest(unittest.TestCase):
         self.assertEqual(vault["supply_amount"], "500")
         self.assertEqual(vault["supply_usd"], "500")
         self.assertEqual(vault["supply_apy_percent"], "3.1")
+        self.assertEqual(vault["net_apy_percent"], "3.1")
+        vault_v2 = next(
+            row for row in rows if row["position_type"] == "vault_v2"
+        )
+        self.assertEqual(vault_v2["supply_amount"], "7000")
+        self.assertEqual(vault_v2["supply_apy_percent"], "11.98")
+        self.assertEqual(vault_v2["net_apy_percent"], "11.98")
 
     def test_normalizes_18_decimal_vault_assets(self):
         payload = _payload()
@@ -127,7 +152,7 @@ class MorphoFetchTest(unittest.IsolatedAsyncioTestCase):
 
         rows = await _fetch_morpho_rows(client, WALLET, 1)
 
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         variables = client.post.await_args.kwargs["json"]["variables"]
         self.assertEqual(variables, {"address": WALLET, "chainId": 1})
 
@@ -155,7 +180,9 @@ class MorphoFetchTest(unittest.IsolatedAsyncioTestCase):
             response = await get_morpho_positions_csv(WALLET, 1)
 
         parsed = list(csv.DictReader(io.StringIO(response.body.decode())))
-        self.assertEqual(len(parsed), 2)
+        self.assertEqual(len(parsed), 3)
+        vault_v2 = next(row for row in parsed if row["position_type"] == "vault_v2")
+        self.assertEqual(vault_v2["net_apy_percent"], "11.98")
         self.assertEqual(response.headers["cache-control"], "public, max-age=60")
 
 
