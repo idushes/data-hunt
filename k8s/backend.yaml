@@ -39,6 +39,8 @@ spec:
               value: "120"
             - name: OUTBOUND_QUEUE_429_RETRIES
               value: "2"
+            - name: OUTBOUND_ANALYTICS_FLUSH_SECONDS
+              value: "10"
             - name: CSV_CACHE_FLIGHT_TIMEOUT_SECONDS
               value: "180"
             - name: CSV_CACHE_STALE_TTL_SECONDS

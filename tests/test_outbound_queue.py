@@ -4,8 +4,13 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import httpx
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 import outbound_queue as queue_module
+from database import Base
+from models import ExternalRequestDaily
 from outbound_queue import (
     OutboundRequestQueue,
     ProviderPolicy,
@@ -152,6 +157,33 @@ class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final_provider["in_flight"], 0)
         self.assertEqual(final_provider["waiting"], 0)
 
+    async def test_external_requests_are_flushed_to_daily_database_rows(self):
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        session_factory = sessionmaker(bind=engine)
+        queue = OutboundRequestQueue(session_factory=session_factory)
+
+        await queue.record_external_request("morpho")
+        await queue.record_external_request("morpho")
+        await queue.record_external_request("aave_v3")
+        await queue.flush_external_activity()
+        await queue.record_external_request("morpho")
+        await queue.flush_external_activity()
+
+        with session_factory() as db:
+            rows = {
+                row.provider: row.request_count
+                for row in db.query(ExternalRequestDaily).all()
+            }
+        self.assertEqual(rows, {"aave_v3": 1, "morpho": 3})
+
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
 
 class QueuedTransportTest(unittest.IsolatedAsyncioTestCase):
     async def test_429_is_delayed_and_retried(self):
@@ -173,6 +205,11 @@ class QueuedTransportTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(outbound_queue, "slot", immediate_slot),
             patch.object(outbound_queue, "cooldown", AsyncMock()) as cooldown,
+            patch.object(
+                outbound_queue,
+                "record_external_request",
+                AsyncMock(),
+            ) as record_external_request,
         ):
             async with httpx.AsyncClient(transport=transport) as client:
                 response = await client.post(
@@ -183,6 +220,8 @@ class QueuedTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(calls, 2)
         cooldown.assert_awaited_once()
+        self.assertEqual(record_external_request.await_count, 2)
+        record_external_request.assert_awaited_with("coinbase")
 
 
 if __name__ == "__main__":

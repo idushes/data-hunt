@@ -9,7 +9,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database import Base, get_db
-from models import Account, AccountAddress, AccountToken, UsageDaily
+from models import (
+    Account,
+    AccountAddress,
+    AccountToken,
+    ExternalRequestDaily,
+    UsageDaily,
+)
 from routers import admin_analytics
 from security import create_access_token
 
@@ -93,6 +99,30 @@ class AdminAnalyticsTest(unittest.TestCase):
                     ),
                 ]
             )
+            db.add_all(
+                [
+                    ExternalRequestDaily(
+                        day=current_day,
+                        provider="morpho",
+                        request_count=6,
+                    ),
+                    ExternalRequestDaily(
+                        day=current_day,
+                        provider="ethereum_rpc",
+                        request_count=4,
+                    ),
+                    ExternalRequestDaily(
+                        day=current_day - 1,
+                        provider="aave_v3",
+                        request_count=3,
+                    ),
+                    ExternalRequestDaily(
+                        day=current_day - 8,
+                        provider="old-provider",
+                        request_count=50,
+                    ),
+                ]
+            )
             db.commit()
 
         self.previous_admins = admin_analytics.FEATURE_REQUEST_ADMIN_ADDRESSES
@@ -132,9 +162,14 @@ class AdminAnalyticsTest(unittest.TestCase):
         self.assertEqual(payload["registered_users"], 2)
         self.assertEqual(payload["active_users"], 2)
         self.assertEqual(payload["requests"], 15)
+        self.assertEqual(payload["external_requests"], 13)
         self.assertEqual(payload["errors"], 2)
         self.assertEqual(payload["success_rate"], 86.7)
         self.assertEqual(len(payload["daily"]), 7)
+        self.assertEqual(payload["daily"][-1]["external_requests"], 10)
+        self.assertEqual(payload["daily"][-1]["users"], 2)
+        self.assertEqual(payload["daily"][-2]["external_requests"], 3)
+        self.assertEqual(payload["daily"][-2]["users"], 1)
         self.assertEqual(payload["sources"][0]["source"], "uniswap")
         self.assertEqual(payload["sources"][0]["requests"], 10)
         self.assertEqual(

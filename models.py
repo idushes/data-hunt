@@ -90,6 +90,23 @@ class UsageDaily(Base):
     request_count = Column(Integer, nullable=False, default=1)
 
 
+class ExternalRequestDaily(Base):
+    __tablename__ = "external_request_daily"
+    __table_args__ = (
+        UniqueConstraint(
+            "day",
+            "provider",
+            name="uq_external_request_daily_dimension",
+        ),
+        Index("ix_external_request_daily_day", "day"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    day = Column(Integer, nullable=False)
+    provider = Column(String(64), nullable=False)
+    request_count = Column(Integer, nullable=False, default=1)
+
+
 class FeatureRequest(Base):
     __tablename__ = "feature_request"
 

@@ -36,6 +36,9 @@ REDIS_URL = os.environ.get("REDIS_URL")
 OUTBOUND_QUEUE_ENABLED = os.environ.get(
     "OUTBOUND_QUEUE_ENABLED", "true"
 ).lower() not in {"0", "false", "no"}
+OUTBOUND_ANALYTICS_FLUSH_SECONDS = max(
+    1, int(os.environ.get("OUTBOUND_ANALYTICS_FLUSH_SECONDS", 10))
+)
 OUTBOUND_QUEUE_MAX_WAIT_SECONDS = max(
     1, int(os.environ.get("OUTBOUND_QUEUE_MAX_WAIT_SECONDS", 120))
 )

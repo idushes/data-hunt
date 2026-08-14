@@ -5,20 +5,26 @@ import math
 import os
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from email.utils import parsedate_to_datetime
 
 import httpx
 from redis.exceptions import RedisError
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
 
 from config import (
+    OUTBOUND_ANALYTICS_FLUSH_SECONDS,
     OUTBOUND_API_LIMITS_JSON,
     OUTBOUND_QUEUE_429_RETRIES,
     OUTBOUND_QUEUE_ENABLED,
     OUTBOUND_QUEUE_MAX_WAIT_SECONDS,
 )
+from database import SessionLocal
+from models import ExternalRequestDaily
 from redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
@@ -240,7 +246,12 @@ def _request_cost(provider: str, request: httpx.Request, content: bytes) -> int:
 
 
 class OutboundRequestQueue:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        session_factory: Callable[[], Session] = SessionLocal,
+        analytics_flush_seconds: float = OUTBOUND_ANALYTICS_FLUSH_SECONDS,
+    ):
         self.policies = _load_policies()
         self.by_host = {
             host: policy for policy in self.policies for host in policy.hosts
@@ -263,6 +274,12 @@ class OutboundRequestQueue:
             int(OUTBOUND_QUEUE_MAX_WAIT_SECONDS * 2 + 30),
         )
         self._last_redis_warning = 0.0
+        self._session_factory = session_factory
+        self._analytics_flush_seconds = max(0.1, analytics_flush_seconds)
+        self._external_activity: dict[tuple[int, str], int] = {}
+        self._external_activity_lock = asyncio.Lock()
+        self._analytics_stop = asyncio.Event()
+        self._analytics_worker: asyncio.Task[None] | None = None
 
     def policy_for_host(self, host: str | None) -> ProviderPolicy:
         return self.by_host.get((host or "").lower(), FALLBACK_POLICY)
@@ -423,6 +440,111 @@ class OutboundRequestQueue:
     async def cooldown(self, policy: ProviderPolicy, seconds: float) -> None:
         await self._set_cooldown(policy, seconds)
 
+    async def record_external_request(self, provider: str) -> None:
+        day = int(time.time()) // 86400
+        async with self._external_activity_lock:
+            dimension = (day, provider)
+            self._external_activity[dimension] = (
+                self._external_activity.get(dimension, 0) + 1
+            )
+
+    def _persist_external_activity(
+        self,
+        activity: dict[tuple[int, str], int],
+    ) -> None:
+        rows = [
+            {"day": day, "provider": provider, "request_count": count}
+            for (day, provider), count in activity.items()
+        ]
+        if not rows:
+            return
+        table = ExternalRequestDaily.__table__
+        with self._session_factory() as db:
+            dialect = db.get_bind().dialect.name
+            if dialect == "postgresql":
+                statement = postgresql_insert(table).values(rows)
+                statement = statement.on_conflict_do_update(
+                    index_elements=[table.c.day, table.c.provider],
+                    set_={
+                        "request_count": (
+                            table.c.request_count + statement.excluded.request_count
+                        )
+                    },
+                )
+                db.execute(statement)
+            elif dialect == "sqlite":
+                statement = sqlite_insert(table).values(rows)
+                statement = statement.on_conflict_do_update(
+                    index_elements=[table.c.day, table.c.provider],
+                    set_={
+                        "request_count": (
+                            table.c.request_count + statement.excluded.request_count
+                        )
+                    },
+                )
+                db.execute(statement)
+            else:
+                for row in rows:
+                    updated = (
+                        db.query(ExternalRequestDaily)
+                        .filter(
+                            ExternalRequestDaily.day == row["day"],
+                            ExternalRequestDaily.provider == row["provider"],
+                        )
+                        .update(
+                            {
+                                ExternalRequestDaily.request_count: (
+                                    ExternalRequestDaily.request_count
+                                    + row["request_count"]
+                                )
+                            },
+                            synchronize_session=False,
+                        )
+                    )
+                    if not updated:
+                        db.add(ExternalRequestDaily(**row))
+            db.commit()
+
+    async def flush_external_activity(self) -> None:
+        async with self._external_activity_lock:
+            activity = self._external_activity
+            self._external_activity = {}
+        if not activity:
+            return
+        try:
+            await asyncio.to_thread(self._persist_external_activity, activity)
+        except Exception:
+            async with self._external_activity_lock:
+                for dimension, count in activity.items():
+                    self._external_activity[dimension] = (
+                        self._external_activity.get(dimension, 0) + count
+                    )
+            logger.exception("Could not persist external request analytics")
+
+    async def _run_analytics_flush(self) -> None:
+        while not self._analytics_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._analytics_stop.wait(),
+                    timeout=self._analytics_flush_seconds,
+                )
+            except asyncio.TimeoutError:
+                pass
+            await self.flush_external_activity()
+
+    async def start_analytics(self) -> None:
+        if self._analytics_worker is not None:
+            return
+        self._analytics_stop.clear()
+        self._analytics_worker = asyncio.create_task(self._run_analytics_flush())
+
+    async def stop_analytics(self) -> None:
+        self._analytics_stop.set()
+        if self._analytics_worker is not None:
+            await self._analytics_worker
+        self._analytics_worker = None
+        await self.flush_external_activity()
+
     async def status(self, *, include_activity: bool = False) -> dict[str, object]:
         client = get_redis_client()
         now_ms = time.time() * 1000
@@ -544,6 +666,7 @@ class QueuedAsyncHTTPTransport(httpx.AsyncBaseTransport):
                 extensions=request.extensions,
             )
             async with outbound_queue.slot(policy, cost):
+                await outbound_queue.record_external_request(policy.name)
                 response = await self._transport.handle_async_request(queued_request)
             if response.status_code != 429:
                 return response

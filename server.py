@@ -17,6 +17,7 @@ from config import (
     VALUE_RATE_LIMIT_WINDOW_SECONDS,
 )
 from csv_cache import CSVCacheMiddleware
+from outbound_queue import outbound_queue
 from redis_client import close_redis_client
 from scheduled_refresh import (
     ScheduledRefreshMiddleware,
@@ -77,11 +78,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error applying migrations: {e}")
 
+    await outbound_queue.start_analytics()
     await scheduled_refresh.start(app)
     try:
         yield
     finally:
         await scheduled_refresh.stop()
+        await outbound_queue.stop_analytics()
         await close_redis_client()
 
 

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from config import FEATURE_REQUEST_ADMIN_ADDRESSES
 from database import get_db
 from dependencies import get_current_account
-from models import Account, UsageDaily
+from models import Account, ExternalRequestDaily, UsageDaily
 from outbound_queue import outbound_queue
 from scheduled_refresh import scheduled_refresh
 
@@ -72,6 +72,9 @@ async def get_admin_analytics(
     current_day = int(time.time()) // 86400
     first_day = current_day - days + 1
     period = db.query(UsageDaily).filter(UsageDaily.day >= first_day)
+    external_period = db.query(ExternalRequestDaily).filter(
+        ExternalRequestDaily.day >= first_day
+    )
     total_requests = int(
         period.with_entities(
             func.coalesce(func.sum(UsageDaily.request_count), 0)
@@ -99,6 +102,12 @@ async def get_admin_analytics(
         or 0
     )
     registered_users = int(db.query(func.count(Account.id)).scalar() or 0)
+    external_requests = int(
+        external_period.with_entities(
+            func.coalesce(func.sum(ExternalRequestDaily.request_count), 0)
+        ).scalar()
+        or 0
+    )
 
     source_rows = (
         period.with_entities(
@@ -173,12 +182,24 @@ async def get_admin_analytics(
             .all()
         )
     }
+    external_daily_rows = {
+        day: int(requests)
+        for day, requests in (
+            external_period.with_entities(
+                ExternalRequestDaily.day,
+                func.sum(ExternalRequestDaily.request_count),
+            )
+            .group_by(ExternalRequestDaily.day)
+            .all()
+        )
+    }
 
     return {
         "period_days": days,
         "registered_users": registered_users,
         "active_users": active_users,
         "requests": total_requests,
+        "external_requests": external_requests,
         "errors": error_requests,
         "success_rate": (
             round((total_requests - error_requests) / total_requests * 100, 1)
@@ -189,6 +210,7 @@ async def get_admin_analytics(
             {
                 "date": _day_label(day),
                 **daily_rows.get(day, {"requests": 0, "users": 0}),
+                "external_requests": external_daily_rows.get(day, 0),
             }
             for day in range(first_day, current_day + 1)
         ],
