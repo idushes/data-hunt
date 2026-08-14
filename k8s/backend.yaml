@@ -45,6 +45,12 @@ spec:
               value: "86400"
             - name: CSV_CACHE_REFRESH_TIMEOUT_SECONDS
               value: "8"
+            - name: SHEETS_REFRESH_ENABLED
+              value: "true"
+            - name: SHEETS_REFRESH_DELAY_SECONDS
+              value: "3540"
+            - name: SHEETS_REFRESH_POLL_SECONDS
+              value: "5"
             - name: VALUE_RATE_LIMIT_WINDOW_SECONDS
               value: "60"
             - name: VALUE_RATE_LIMIT_AUTHENTICATED
@@ -233,7 +239,28 @@ spec:
                 name: data-hunt
                 port:
                   name: http
+          - path: /pancakeswap
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
           - path: /paradex
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /pendle
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
+          - path: /polymarket
             pathType: Prefix
             backend:
               service:

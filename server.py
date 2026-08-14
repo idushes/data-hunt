@@ -18,6 +18,10 @@ from config import (
 )
 from csv_cache import CSVCacheMiddleware
 from redis_client import close_redis_client
+from scheduled_refresh import (
+    ScheduledRefreshMiddleware,
+    scheduled_refresh,
+)
 from routers.aave import router as aave_router
 from routers.admin_analytics import router as admin_analytics_router
 from routers.auth import router as auth_router
@@ -73,8 +77,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error applying migrations: {e}")
 
-    yield
-    await close_redis_client()
+    await scheduled_refresh.start(app)
+    try:
+        yield
+    finally:
+        await scheduled_refresh.stop()
+        await close_redis_client()
 
 
 def get_description_with_chains():
@@ -108,6 +116,7 @@ app.add_middleware(
     stale_ttl_seconds=CSV_CACHE_STALE_TTL_SECONDS,
     refresh_timeout_seconds=CSV_CACHE_REFRESH_TIMEOUT_SECONDS,
 )
+app.add_middleware(ScheduledRefreshMiddleware)
 app.add_middleware(
     ValueRateLimitMiddleware,
     authenticated_limit=VALUE_RATE_LIMIT_AUTHENTICATED,

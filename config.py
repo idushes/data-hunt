@@ -23,6 +23,15 @@ CSV_CACHE_STALE_TTL_SECONDS = max(
 CSV_CACHE_REFRESH_TIMEOUT_SECONDS = max(
     1, int(os.environ.get("CSV_CACHE_REFRESH_TIMEOUT_SECONDS", 8))
 )
+SHEETS_REFRESH_ENABLED = os.environ.get(
+    "SHEETS_REFRESH_ENABLED", "true"
+).lower() not in {"0", "false", "no"}
+SHEETS_REFRESH_DELAY_SECONDS = max(
+    60, int(os.environ.get("SHEETS_REFRESH_DELAY_SECONDS", 59 * 60))
+)
+SHEETS_REFRESH_POLL_SECONDS = max(
+    1, int(os.environ.get("SHEETS_REFRESH_POLL_SECONDS", 5))
+)
 REDIS_URL = os.environ.get("REDIS_URL")
 OUTBOUND_QUEUE_ENABLED = os.environ.get(
     "OUTBOUND_QUEUE_ENABLED", "true"

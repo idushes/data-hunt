@@ -210,6 +210,13 @@ class AdminAnalyticsTest(unittest.TestCase):
                 "status",
                 AsyncMock(return_value=queue_status),
             ) as queue_status_mock,
+            patch.object(
+                admin_analytics.scheduled_refresh,
+                "status",
+                AsyncMock(
+                    return_value={"enabled": True, "queued": 7, "due": 1}
+                ),
+            ) as refresh_status_mock,
             TestClient(self.app) as client,
         ):
             response = client.get(
@@ -223,9 +230,13 @@ class AdminAnalyticsTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers["cache-control"], "private, no-store")
-        self.assertEqual(response.json(), queue_status)
+        self.assertEqual(
+            response.json()["scheduled_refresh"],
+            {"enabled": True, "queued": 7, "due": 1},
+        )
         self.assertEqual(forbidden.status_code, 403)
         queue_status_mock.assert_awaited_once_with(include_activity=True)
+        refresh_status_mock.assert_awaited_once_with()
 
 
 if __name__ == "__main__":

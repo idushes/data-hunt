@@ -10,6 +10,7 @@ from database import get_db
 from dependencies import get_current_account
 from models import Account, UsageDaily
 from outbound_queue import outbound_queue
+from scheduled_refresh import scheduled_refresh
 
 
 router = APIRouter(prefix="/admin/analytics", tags=["admin analytics"])
@@ -49,7 +50,9 @@ async def get_admin_queue_status(
     _: Account = Depends(_require_admin),
 ):
     response.headers["Cache-Control"] = "private, no-store"
-    return await outbound_queue.status(include_activity=True)
+    status_payload = await outbound_queue.status(include_activity=True)
+    status_payload["scheduled_refresh"] = await scheduled_refresh.status()
+    return status_payload
 
 
 @router.get("")

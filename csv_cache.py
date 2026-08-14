@@ -17,10 +17,15 @@ from starlette.responses import StreamingResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from redis_client import get_redis_client
+from value_rate_limit import (
+    DATA_ACCESS_INTERNAL_HEADER,
+    DATA_ACCESS_INTERNAL_TOKEN,
+)
 
 logger = logging.getLogger(__name__)
 
 CACHE_BUSTER_PARAMS = {"_", "cache_bust", "refresh", "auth_token"}
+CACHE_FORCE_REFRESH_HEADER = "x-datahunt-force-cache-refresh"
 RELEASE_LOCK_SCRIPT = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
     return redis.call('DEL', KEYS[1])
@@ -396,6 +401,33 @@ class CSVCacheMiddleware:
 
         key = self._cache_key(request)
         client = self._redis()
+        force_refresh = (
+            request.headers.get(DATA_ACCESS_INTERNAL_HEADER)
+            == DATA_ACCESS_INTERNAL_TOKEN
+            and request.headers.get(CACHE_FORCE_REFRESH_HEADER) == "1"
+        )
+        if force_refresh:
+            if client is None:
+                return await self._call_and_cache(
+                    request, call_next, key, "memory"
+                )
+            lock_token = await self._acquire_redis_lock(key)
+            if lock_token is None:
+                return await self._call_and_cache(
+                    request, call_next, key, "memory"
+                )
+            if lock_token == "":
+                cached = await self._wait_for_redis_flight(key)
+                if cached is not None:
+                    return self._response_from_cache(cached, "redis")
+                lock_token = await self._acquire_redis_lock(key)
+                if not lock_token:
+                    return await self._call_and_cache(
+                        request, call_next, key, "memory"
+                    )
+            return await self._refresh_redis(
+                request, call_next, key, lock_token
+            )
         if client is None:
             return await self._dispatch_memory(request, call_next, key)
 

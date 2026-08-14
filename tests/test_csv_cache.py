@@ -9,6 +9,11 @@ from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
 
 from csv_cache import CSVCacheMiddleware, CSVMemoryCacheMiddleware
+from csv_cache import CACHE_FORCE_REFRESH_HEADER
+from value_rate_limit import (
+    DATA_ACCESS_INTERNAL_HEADER,
+    DATA_ACCESS_INTERNAL_TOKEN,
+)
 
 
 class FakeRedis:
@@ -377,6 +382,45 @@ class CSVRedisCacheTest(unittest.IsolatedAsyncioTestCase):
             sorted([first.headers["x-csv-cache"], second.headers["x-csv-cache"]]),
             ["HIT", "MISS"],
         )
+
+    async def test_internal_force_refresh_replaces_a_fresh_cached_value(self):
+        redis = FakeRedis()
+        app = FastAPI()
+        value = "old"
+        calls = 0
+        app.add_middleware(
+            CSVCacheMiddleware,
+            ttl_seconds=60,
+            redis_client=redis,
+        )
+
+        @app.get("/forced.csv")
+        async def forced_csv():
+            nonlocal calls
+            calls += 1
+            return Response(content=f"value\n{value}\n", media_type="text/csv")
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            first = await client.get("/forced.csv")
+            value = "new"
+            forced = await client.get(
+                "/forced.csv",
+                headers={
+                    DATA_ACCESS_INTERNAL_HEADER: DATA_ACCESS_INTERNAL_TOKEN,
+                    CACHE_FORCE_REFRESH_HEADER: "1",
+                },
+            )
+            repeated = await client.get("/forced.csv")
+
+        self.assertEqual(first.text, "value\nold\n")
+        self.assertEqual(forced.text, "value\nnew\n")
+        self.assertEqual(forced.headers["x-csv-cache"], "MISS")
+        self.assertEqual(repeated.text, "value\nnew\n")
+        self.assertEqual(repeated.headers["x-csv-cache"], "HIT")
+        self.assertEqual(calls, 2)
 
     async def test_returns_stale_before_slow_refresh_finishes_and_updates_caches(self):
         redis = FakeRedis()
