@@ -85,7 +85,6 @@ class CSVCacheMiddleware:
                 urlencode(query_items, doseq=True),
                 request.headers.get("authorization", ""),
                 request.headers.get("cookie", ""),
-                request.headers.get("origin", ""),
             ]
         )
         return hashlib.sha256(key_material.encode()).hexdigest()

@@ -101,13 +101,6 @@ app = FastAPI(
 )
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.add_middleware(
     CSVCacheMiddleware,
     ttl_seconds=CSV_CACHE_TTL_SECONDS,
     max_entries=CSV_CACHE_MAX_ENTRIES,
@@ -119,6 +112,13 @@ app.add_middleware(
     ValueRateLimitMiddleware,
     authenticated_limit=VALUE_RATE_LIMIT_AUTHENTICATED,
     window_seconds=VALUE_RATE_LIMIT_WINDOW_SECONDS,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(cmc_router)

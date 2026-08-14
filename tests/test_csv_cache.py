@@ -4,6 +4,7 @@ import unittest
 
 import httpx
 from fastapi import FastAPI, Header
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
 
@@ -176,6 +177,39 @@ class CSVMemoryCacheMiddlewareTest(unittest.TestCase):
 
         self.assertEqual(first.headers["x-csv-cache"], "MISS")
         self.assertEqual(second.headers["x-csv-cache"], "HIT")
+        self.assertEqual(calls["csv"], 1)
+
+    def test_origin_does_not_fragment_data_cache_and_cors_is_reapplied(self):
+        app, calls = _build_app()
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        with TestClient(app) as client:
+            client.cookies.set("session", "same-user")
+            first = client.get(
+                "/report.csv?value=one",
+                headers={"Origin": "https://crypto.lisacorp.com"},
+            )
+            second = client.get(
+                "/report.csv?value=one",
+                headers={"Origin": "https://sheets.example"},
+            )
+
+        self.assertEqual(first.headers["x-csv-cache"], "MISS")
+        self.assertEqual(second.headers["x-csv-cache"], "HIT")
+        self.assertEqual(
+            first.headers["access-control-allow-origin"],
+            "https://crypto.lisacorp.com",
+        )
+        self.assertEqual(
+            second.headers["access-control-allow-origin"],
+            "https://sheets.example",
+        )
         self.assertEqual(calls["csv"], 1)
 
     def test_failed_csv_response_is_never_cached(self):

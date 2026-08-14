@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -9,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database import Base, get_db
+from csv_cache import CSVCacheMiddleware
 from models import ValueResource
 from routers.value import (
     DIRECT_VALUE_SOURCES,
@@ -34,9 +36,11 @@ class ValueResourcesTest(unittest.TestCase):
             bind=self.engine,
         )
         self.app = FastAPI()
+        self.source_calls = 0
 
         @self.app.get("/test.csv")
         async def test_csv(value: str = "20", token: str = ""):
+            self.source_calls += 1
             amount = token or value
             return Response(
                 content=f"id,amount\none,10\ntwo,{amount}\n",
@@ -118,6 +122,35 @@ class ValueResourcesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.text, "123.45")
         self.assertTrue(response.headers["content-type"].startswith("text/csv"))
+
+    def test_loaded_table_cache_is_reused_by_first_short_value_request(self):
+        self.app.add_middleware(CSVCacheMiddleware, ttl_seconds=60)
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        resource_id = self._create_stable_resource()
+
+        with patch("csv_cache.get_redis_client", return_value=None):
+            loaded = self.client.get(
+                "/test.csv?value=123.45&auth_token=browser-token",
+                headers={"Origin": "https://crypto.lisacorp.com"},
+            )
+            short = self.client.get(
+                f"/v/{resource_id}?auth_token=sheets-token"
+            )
+            repeated = self.client.get(
+                f"/v/{resource_id}?auth_token=sheets-token"
+            )
+
+        self.assertEqual(loaded.headers["x-csv-cache"], "MISS")
+        self.assertEqual(short.headers["x-csv-cache"], "MISS")
+        self.assertEqual(repeated.headers["x-csv-cache"], "HIT")
+        self.assertEqual(short.text, "123.45")
+        self.assertEqual(self.source_calls, 1)
 
     def test_credentials_are_never_stored_and_are_passed_separately(self):
         rejected = self.client.post(
