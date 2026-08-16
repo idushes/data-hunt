@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from config import FEATURE_REQUEST_ADMIN_ADDRESSES
 from database import get_db
 from dependencies import get_current_account
-from models import Account, ExternalRequestDaily, UsageDaily
+from models import Account, AuthFunnelEvent, ExternalRequestDaily, UsageDaily
 from outbound_queue import outbound_queue
 from scheduled_refresh import scheduled_refresh
 
@@ -193,6 +193,19 @@ async def get_admin_analytics(
             .all()
         )
     }
+    funnel_period = db.query(AuthFunnelEvent).filter(AuthFunnelEvent.day >= first_day)
+    funnel_rows = {
+        event_name: {"events": int(events), "sessions": int(sessions)}
+        for event_name, events, sessions in (
+            funnel_period.with_entities(
+                AuthFunnelEvent.event_name,
+                func.count(AuthFunnelEvent.id),
+                func.count(distinct(AuthFunnelEvent.anonymous_session_id)),
+            )
+            .group_by(AuthFunnelEvent.event_name)
+            .all()
+        )
+    }
 
     return {
         "period_days": days,
@@ -234,4 +247,30 @@ async def get_admin_analytics(
             }
             for source, requests, errors, client_errors, server_errors in error_source_rows
         ],
+        "auth_funnel": {
+            "unique_sessions": int(
+                funnel_period.with_entities(
+                    func.count(distinct(AuthFunnelEvent.anonymous_session_id))
+                ).scalar()
+                or 0
+            ),
+            "steps": [
+                {
+                    "event": event_name,
+                    **funnel_rows.get(event_name, {"events": 0, "sessions": 0}),
+                }
+                for event_name in (
+                    "sheets_view",
+                    "login_clicked",
+                    "wallet_missing",
+                    "wallet_connection_rejected",
+                    "signature_requested",
+                    "signature_rejected",
+                    "login_succeeded",
+                    "login_failed",
+                    "table_loaded",
+                    "formula_copied",
+                )
+            ],
+        },
     }

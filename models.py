@@ -107,6 +107,31 @@ class ExternalRequestDaily(Base):
     request_count = Column(Integer, nullable=False, default=1)
 
 
+class AuthFunnelEvent(Base):
+    """A privacy-preserving, deduplicated anonymous product-funnel event."""
+
+    __tablename__ = "auth_funnel_event"
+    __table_args__ = (
+        UniqueConstraint(
+            "day",
+            "anonymous_session_id",
+            "event_name",
+            name="uq_auth_funnel_event_day_session_event",
+        ),
+        Index("ix_auth_funnel_event_day", "day"),
+        Index("ix_auth_funnel_event_day_event", "day", "event_name"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    # Client-generated random UUID. This is never linked to an account or wallet.
+    anonymous_session_id = Column(String(36), nullable=False)
+    day = Column(Integer, nullable=False)
+    event_name = Column(String(32), nullable=False)
+    utm_source = Column(String(48), nullable=True)
+    utm_medium = Column(String(48), nullable=True)
+    utm_campaign = Column(String(96), nullable=True)
+
+
 class FeatureRequest(Base):
     __tablename__ = "feature_request"
 

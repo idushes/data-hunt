@@ -34,6 +34,7 @@ from routers.coinbase import router as coinbase_router
 from routers.compound import router as compound_router
 from routers.euler import router as euler_router
 from routers.feature_requests import router as feature_requests_router
+from routers.funnel_analytics import router as funnel_analytics_router
 from routers.fluid import router as fluid_router
 from routers.gmx import router as gmx_router
 from routers.health import router as health_router
@@ -158,6 +159,7 @@ app.include_router(polymarket_router)
 app.include_router(pendle_router)
 app.include_router(value_router)
 app.include_router(feature_requests_router)
+app.include_router(funnel_analytics_router)
 app.include_router(admin_analytics_router)
 
 app.include_router(auth_router)
