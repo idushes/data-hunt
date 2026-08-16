@@ -6,6 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from analytics_retention import auth_funnel_retention
 from config import (
     CSV_CACHE_FLIGHT_TIMEOUT_SECONDS,
     CSV_CACHE_MAX_ENTRIES,
@@ -80,11 +81,13 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error applying migrations: {e}")
 
     await outbound_queue.start_analytics()
+    await auth_funnel_retention.start()
     await scheduled_refresh.start(app)
     try:
         yield
     finally:
         await scheduled_refresh.stop()
+        await auth_funnel_retention.stop()
         await outbound_queue.stop_analytics()
         await close_redis_client()
 

@@ -1,6 +1,7 @@
 import uuid
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     Float,
     ForeignKey,
@@ -120,6 +121,22 @@ class AuthFunnelEvent(Base):
         ),
         Index("ix_auth_funnel_event_day", "day"),
         Index("ix_auth_funnel_event_day_event", "day", "event_name"),
+        CheckConstraint(
+            "event_name IN ('sheets_view', 'login_clicked', 'wallet_missing', "
+            "'wallet_connection_rejected', 'signature_requested', "
+            "'signature_rejected', 'login_succeeded', 'login_failed', "
+            "'table_loaded', 'formula_copied')",
+            name="ck_auth_funnel_event_name",
+        ),
+        CheckConstraint(
+            "length(anonymous_session_id) = 36 "
+            "AND substr(anonymous_session_id, 9, 1) = '-' "
+            "AND substr(anonymous_session_id, 14, 1) = '-' "
+            "AND substr(anonymous_session_id, 15, 1) = '4' "
+            "AND substr(anonymous_session_id, 19, 1) = '-' "
+            "AND substr(anonymous_session_id, 24, 1) = '-'",
+            name="ck_auth_funnel_event_session_uuid_v4",
+        ),
     )
 
     id = Column(Integer, primary_key=True)

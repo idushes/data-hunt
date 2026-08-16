@@ -5,10 +5,12 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database import Base, get_db
+from analytics_retention import AuthFunnelRetention
 from models import Account, AccountAddress, AccountToken, AuthFunnelEvent
 from routers import admin_analytics, funnel_analytics
 from security import create_access_token
@@ -89,9 +91,9 @@ class FunnelAnalyticsTest(unittest.TestCase):
         payload = {
             "session_id": session_id,
             "event": "login_clicked",
-            "utm_source": "Google",
-            "utm_medium": "CPC",
-            "utm_campaign": "Sheets-Search_1",
+            "utm_source": "google",
+            "utm_medium": "cpc",
+            "utm_campaign": "sheets-search-1",
         }
         with TestClient(self.app) as client:
             first = client.post("/analytics/funnel/events", json=payload)
@@ -107,7 +109,7 @@ class FunnelAnalyticsTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].utm_source, "google")
         self.assertEqual(events[0].utm_medium, "cpc")
-        self.assertEqual(events[0].utm_campaign, "sheets-search_1")
+        self.assertEqual(events[0].utm_campaign, "sheets-search-1")
 
     def test_rejects_unknown_sensitive_and_oversized_input(self):
         session_id = str(uuid4())
@@ -139,14 +141,69 @@ class FunnelAnalyticsTest(unittest.TestCase):
                     "event": "login_clicked",
                 },
             )
+            arbitrary_source = client.post(
+                "/analytics/funnel/events",
+                json={
+                    "session_id": session_id,
+                    "event": "login_clicked",
+                    "utm_source": "newsletter",
+                    "utm_medium": "referral",
+                },
+            )
+            incomplete_attribution = client.post(
+                "/analytics/funnel/events",
+                json={
+                    "session_id": session_id,
+                    "event": "login_clicked",
+                    "utm_source": "google",
+                },
+            )
+            non_google_campaign = client.post(
+                "/analytics/funnel/events",
+                json={
+                    "session_id": session_id,
+                    "event": "login_clicked",
+                    "utm_source": "threads",
+                    "utm_medium": "social",
+                    "utm_campaign": "campaign-1",
+                },
+            )
 
-        for response in (unknown, sensitive, oversized, non_random_session):
+        for response in (
+            unknown,
+            sensitive,
+            oversized,
+            non_random_session,
+            arbitrary_source,
+            incomplete_attribution,
+            non_google_campaign,
+        ):
             self.assertEqual(response.status_code, 422, response.text)
         with self.Session() as db:
             self.assertEqual(db.query(AuthFunnelEvent).count(), 0)
 
-    def test_rate_limits_anonymous_ingestion_without_persisting_network_data(self):
-        funnel_analytics._rate_limiter.limit = 1
+    def test_rate_limits_each_session_without_network_data(self):
+        funnel_analytics._rate_limiter.session_limit = 1
+        session_id = str(uuid4())
+        with TestClient(self.app) as client:
+            accepted = client.post(
+                "/analytics/funnel/events",
+                json={"session_id": session_id, "event": "sheets_view"},
+            )
+            limited = client.post(
+                "/analytics/funnel/events",
+                json={"session_id": session_id, "event": "login_clicked"},
+            )
+
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        self.assertEqual(limited.status_code, 429, limited.text)
+        self.assertEqual(limited.headers["cache-control"], "no-store")
+        self.assertEqual(limited.headers["x-ratelimit-limit"], "240")
+        with self.Session() as db:
+            self.assertEqual(db.query(AuthFunnelEvent).count(), 1)
+
+    def test_global_quota_bounds_rotating_anonymous_sessions(self):
+        funnel_analytics._rate_limiter.global_limit = 1
         with TestClient(self.app) as client:
             accepted = client.post(
                 "/analytics/funnel/events",
@@ -159,10 +216,56 @@ class FunnelAnalyticsTest(unittest.TestCase):
 
         self.assertEqual(accepted.status_code, 202, accepted.text)
         self.assertEqual(limited.status_code, 429, limited.text)
-        self.assertEqual(limited.headers["cache-control"], "no-store")
-        self.assertEqual(limited.headers["x-ratelimit-limit"], "1")
         with self.Session() as db:
             self.assertEqual(db.query(AuthFunnelEvent).count(), 1)
+
+    def test_database_constraints_reject_invalid_event_and_session_shape(self):
+        current_day = int(time.time()) // 86400
+        with self.Session() as db:
+            db.add(
+                AuthFunnelEvent(
+                    anonymous_session_id=str(uuid4()),
+                    day=current_day,
+                    event_name="not-allowed",
+                )
+            )
+            with self.assertRaises(IntegrityError):
+                db.commit()
+            db.rollback()
+            db.add(
+                AuthFunnelEvent(
+                    anonymous_session_id="not-a-session-id",
+                    day=current_day,
+                    event_name="sheets_view",
+                )
+            )
+            with self.assertRaises(IntegrityError):
+                db.commit()
+
+    def test_retention_keeps_only_the_longest_admin_period(self):
+        current_day = int(time.time()) // 86400
+        with self.Session() as db:
+            db.add_all(
+                [
+                    AuthFunnelEvent(
+                        anonymous_session_id=str(uuid4()),
+                        day=current_day - 30,
+                        event_name="sheets_view",
+                    ),
+                    AuthFunnelEvent(
+                        anonymous_session_id=str(uuid4()),
+                        day=current_day - 29,
+                        event_name="sheets_view",
+                    ),
+                ]
+            )
+            db.commit()
+
+        retention = AuthFunnelRetention(retention_days=30, session_factory=self.Session)
+        self.assertEqual(retention.delete_expired(current_day), 1)
+        with self.Session() as db:
+            self.assertEqual(db.query(AuthFunnelEvent).count(), 1)
+            self.assertEqual(db.query(AuthFunnelEvent).one().day, current_day - 29)
 
     def test_admin_aggregates_steps_and_remains_admin_only(self):
         current_day = int(time.time()) // 86400
