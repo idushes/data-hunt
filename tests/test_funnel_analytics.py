@@ -111,6 +111,43 @@ class FunnelAnalyticsTest(unittest.TestCase):
         self.assertEqual(events[0].utm_medium, "cpc")
         self.assertEqual(events[0].utm_campaign, "sheets-search-1")
 
+    def test_product_events_alias_uses_the_same_contract_and_ingestion(self):
+        payload = {"session_id": str(uuid4()), "event": "sheets_view"}
+        with TestClient(self.app) as client:
+            alias = client.post("/product-events", json=payload)
+            legacy_retry = client.post("/analytics/funnel/events", json=payload)
+            invalid = client.post(
+                "/product-events",
+                json={"session_id": str(uuid4()), "event": "not-allowlisted"},
+            )
+
+        self.assertEqual(alias.status_code, 202, alias.text)
+        self.assertEqual(alias.headers["cache-control"], "no-store")
+        self.assertEqual(alias.json(), {"accepted": True, "deduplicated": False})
+        self.assertEqual(legacy_retry.status_code, 202, legacy_retry.text)
+        self.assertEqual(legacy_retry.json(), {"accepted": True, "deduplicated": True})
+        self.assertEqual(invalid.status_code, 422, invalid.text)
+        with self.Session() as db:
+            self.assertEqual(db.query(AuthFunnelEvent).count(), 1)
+
+    def test_product_events_alias_shares_the_anonymous_rate_limit(self):
+        funnel_analytics._rate_limiter.session_limit = 1
+        session_id = str(uuid4())
+        with TestClient(self.app) as client:
+            accepted = client.post(
+                "/product-events",
+                json={"session_id": session_id, "event": "sheets_view"},
+            )
+            limited = client.post(
+                "/analytics/funnel/events",
+                json={"session_id": session_id, "event": "login_clicked"},
+            )
+
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        self.assertEqual(limited.status_code, 429, limited.text)
+        with self.Session() as db:
+            self.assertEqual(db.query(AuthFunnelEvent).count(), 1)
+
     def test_rejects_unknown_sensitive_and_oversized_input(self):
         session_id = str(uuid4())
         with TestClient(self.app) as client:

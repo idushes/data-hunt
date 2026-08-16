@@ -19,7 +19,7 @@ from redis_client import get_redis_client
 from value_rate_limit import INCREMENT_RATE_LIMIT_SCRIPT
 
 
-router = APIRouter(prefix="/analytics/funnel", tags=["anonymous analytics"])
+router = APIRouter(tags=["anonymous analytics"])
 
 CampaignValue = str | None
 AttributionSource: TypeAlias = Literal[
@@ -143,7 +143,8 @@ class _AnonymousEventRateLimit:
 _rate_limiter = _AnonymousEventRateLimit()
 
 
-@router.post("/events", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/analytics/funnel/events", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/product-events", status_code=status.HTTP_202_ACCEPTED)
 async def record_funnel_event(
     payload: FunnelEventInput,
     response: Response,
