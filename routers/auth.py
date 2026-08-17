@@ -29,6 +29,7 @@ class SignatureVerification(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str
+    is_new_account: bool
 
 
 class DeactivateTokenRequest(BaseModel):
@@ -87,11 +88,13 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
 
         network = "eth"  # Default to 'eth' to match ID in chain list
 
+        is_new_account = False
         if account_addr:
             account = account_addr.account
             network = account_addr.network
         else:
             # Create new account
+            is_new_account = True
             account = Account(
                 init_address=recovered_address.lower(), init_address_network=network
             )
@@ -128,7 +131,11 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
             }
         )
 
-        return {"access_token": access_token, "token_type": "bearer"}
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "is_new_account": is_new_account,
+        }
 
     except Exception as e:
         import traceback
