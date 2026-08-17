@@ -12,4 +12,5 @@ server.log
 data/
 data.csv
 .env
+.secrets/
 .DS_Store
