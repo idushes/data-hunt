@@ -642,6 +642,39 @@ async def record_value_resource_copy(
     return _copied_resource_item(history, resource)
 
 
+@router.delete(
+    "/value-resources/{resource_id}/copies",
+    status_code=204,
+    summary="Remove a copied value resource",
+    description=(
+        "Removes the current account's copied-resource history entry without "
+        "deleting the shared value resource or resolving its external source."
+    ),
+)
+async def delete_value_resource_copy(
+    resource_id: str = Path(
+        ...,
+        min_length=12,
+        max_length=22,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+):
+    deleted = (
+        db.query(AccountValueResource)
+        .filter(
+            AccountValueResource.account_id == account.id,
+            AccountValueResource.resource_id == resource_id,
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Copied resource not found")
+    db.commit()
+    return Response(status_code=204)
+
+
 @router.get(
     "/value-resources/mine",
     response_model=CopiedValueResourcesPage,

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -97,6 +97,9 @@ class CopiedValueResourcesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
+    def _delete_copy(self, resource_id):
+        return self.client.delete(f"/value-resources/{resource_id}/copies")
+
     def test_repeated_copies_upsert_one_history_row(self):
         resource_id = self._create_resource()
         with patch("routers.value._request_source", new=AsyncMock()) as source_request:
@@ -135,6 +138,70 @@ class CopiedValueResourcesTest(unittest.TestCase):
         try:
             self.assertEqual(db.query(ValueResource).count(), 1)
             self.assertEqual(db.query(AccountValueResource).count(), 2)
+        finally:
+            db.close()
+
+    def test_delete_removes_only_current_history_and_keeps_resource_resolvable(self):
+        resource_id = self._create_resource()
+        self._record_copy(resource_id)
+        self.current_account = self.second_account
+        self._record_copy(resource_id)
+
+        self.current_account = self.first_account
+        with patch("routers.value._request_source", new=AsyncMock()) as source_request:
+            deleted = self._delete_copy(resource_id)
+
+        self.assertEqual(deleted.status_code, 204)
+        self.assertEqual(deleted.content, b"")
+        source_request.assert_not_awaited()
+        db = self.Session()
+        try:
+            self.assertIsNotNone(db.get(ValueResource, resource_id))
+            histories = db.query(AccountValueResource).all()
+            self.assertEqual(len(histories), 1)
+            self.assertEqual(histories[0].account_id, self.second_account.id)
+            self.assertEqual(histories[0].resource_id, resource_id)
+        finally:
+            db.close()
+        with patch(
+            "routers.value._resolve_stable_value",
+            new=AsyncMock(return_value=Response(content="123.45", media_type="text/csv")),
+        ) as resolve_value:
+            resolved = self.client.get(f"/v/{resource_id}")
+        self.assertEqual(resolved.status_code, 200, resolved.text)
+        self.assertEqual(resolved.text, "123.45")
+        resolve_value.assert_awaited_once()
+
+    def test_delete_rejects_missing_or_another_accounts_history(self):
+        resource_id = self._create_resource()
+        self.current_account = self.second_account
+        self._record_copy(resource_id)
+
+        self.current_account = self.first_account
+        other_account = self._delete_copy(resource_id)
+        missing = self._delete_copy("AbCdEf123456")
+
+        self.assertEqual(other_account.status_code, 404)
+        self.assertEqual(missing.status_code, 404)
+        db = self.Session()
+        try:
+            self.assertEqual(db.query(AccountValueResource).count(), 1)
+            self.assertEqual(db.query(AccountValueResource).one().account_id, self.second_account.id)
+        finally:
+            db.close()
+
+    def test_copy_can_recreate_history_after_delete(self):
+        resource_id = self._create_resource()
+        self._record_copy(resource_id)
+
+        self.assertEqual(self._delete_copy(resource_id).status_code, 204)
+        recreated = self._record_copy(resource_id)
+
+        self.assertEqual(recreated["copy_count"], 1)
+        db = self.Session()
+        try:
+            self.assertEqual(db.query(AccountValueResource).count(), 1)
+            self.assertEqual(db.query(AccountValueResource).one().resource_id, resource_id)
         finally:
             db.close()
 
@@ -305,6 +372,7 @@ class CopiedValueResourcesTest(unittest.TestCase):
 
         listed = self.client.get("/value-resources/mine")
         recorded = self.client.post(f"/value-resources/{resource_id}/copies")
+        deleted = self.client.delete(f"/value-resources/{resource_id}/copies")
         previewed = self.client.post(
             "/value-resources/previews",
             json={"resource_ids": [resource_id]},
@@ -312,6 +380,7 @@ class CopiedValueResourcesTest(unittest.TestCase):
 
         self.assertEqual(listed.status_code, 401)
         self.assertEqual(recorded.status_code, 401)
+        self.assertEqual(deleted.status_code, 401)
         self.assertEqual(previewed.status_code, 401)
 
 
