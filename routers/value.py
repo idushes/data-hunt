@@ -743,9 +743,7 @@ async def preview_copied_value_resources(
     cache_requests = []
     for resource_id in resource_ids:
         resource = resources[resource_id]
-        parameters = resource.parameters if isinstance(resource.parameters, dict) else {}
-        query_items = [(str(name), str(value)) for name, value in parameters.items()]
-        query_items.extend(credentials.get(resource.source, {}).items())
+        query_items = list(credentials.get(resource.source, {}).items())
         cache_requests.append((resource_id, f"/v/{resource_id}", query_items))
 
     cached = {}

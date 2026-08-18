@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from database import Base, get_db
 from dependencies import get_current_account
-from csv_cache import CachedCSVPreview
+from csv_cache import CachedCSVPreview, csv_cache_digest
 from models import Account, AccountValueResource, ValueResource
 from routers.value import router
 
@@ -222,9 +222,9 @@ class CopiedValueResourcesTest(unittest.TestCase):
         cache_requests = load_previews.await_args.args[1]
         self.assertEqual(cache_requests[0][0], resource_id)
         self.assertEqual(cache_requests[0][1], f"/v/{resource_id}")
-        self.assertIn(("chain_id", "1"), cache_requests[0][2])
+        self.assertEqual(cache_requests[0][2], [])
 
-    def test_preview_credentials_are_used_only_for_the_cache_lookup(self):
+    def test_preview_cache_lookup_matches_short_url_without_resource_parameters(self):
         resource_id = self._create_resource(
             source="binance",
             key="binance:total",
@@ -233,9 +233,23 @@ class CopiedValueResourcesTest(unittest.TestCase):
         )
         self._record_copy(resource_id)
 
+        expected_short_url_digest = csv_cache_digest(
+            method="GET",
+            path=f"/v/{resource_id}",
+            query_items=[
+                ("capsule", "right-capsule"),
+                ("auth_token", "sheets-token"),
+            ],
+        )
+
         async def cached_for_capsule(_client, requests, **_kwargs):
-            query = dict(requests[0][2])
-            if query.get("capsule") != "right-capsule":
+            _request_id, path, query_items = requests[0]
+            preview_digest = csv_cache_digest(
+                method="GET",
+                path=path,
+                query_items=query_items,
+            )
+            if preview_digest != expected_short_url_digest:
                 return {}
             return {
                 resource_id: CachedCSVPreview(
@@ -251,6 +265,7 @@ class CopiedValueResourcesTest(unittest.TestCase):
                 "routers.value.load_cached_csv_previews",
                 new=AsyncMock(side_effect=cached_for_capsule),
             ),
+            patch("routers.value._request_source", new=AsyncMock()) as source_request,
         ):
             missing = self.client.post(
                 "/value-resources/previews",
@@ -270,6 +285,7 @@ class CopiedValueResourcesTest(unittest.TestCase):
         self.assertEqual(missing.json()["items"][0]["cache_status"], "missing")
         self.assertEqual(found.json()["items"][0]["value"], "236.70")
         self.assertNotIn("capsule", found.text)
+        source_request.assert_not_awaited()
 
     def test_preview_rejects_resources_from_another_account(self):
         resource_id = self._create_resource()
