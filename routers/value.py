@@ -13,7 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import ValueResource
+from dependencies import get_current_account
+from models import Account, AccountValueResource, ValueResource
 from value_rate_limit import (
     DATA_ACCESS_INTERNAL_HEADER,
     DATA_ACCESS_INTERNAL_TOKEN,
@@ -103,6 +104,50 @@ class CreateValueResource(BaseModel):
     key: str | None = Field(default=None, max_length=1024)
     column: str | None = Field(default=None, max_length=128)
     parameters: dict[str, str] = Field(default_factory=dict)
+
+
+class CopiedValueResourceItem(BaseModel):
+    id: str
+    source: str
+    key: str | None
+    column: str | None
+    parameters: dict[str, str]
+    credential_parameters: list[str]
+    first_copied_at: int
+    last_copied_at: int
+    copy_count: int
+
+
+class CopiedValueResourcesPage(BaseModel):
+    items: list[CopiedValueResourceItem]
+    total: int
+    limit: int
+    offset: int
+
+
+def _copied_resource_item(
+    history: AccountValueResource,
+    resource: ValueResource,
+) -> CopiedValueResourceItem:
+    parameters = resource.parameters if isinstance(resource.parameters, dict) else {}
+    safe_parameters = {
+        str(name): str(value)
+        for name, value in parameters.items()
+        if name not in RESOURCE_CREDENTIAL_PARAMS.get(resource.source, frozenset())
+    }
+    return CopiedValueResourceItem(
+        id=resource.id,
+        source=resource.source,
+        key=resource.key,
+        column=resource.column,
+        parameters=safe_parameters,
+        credential_parameters=sorted(
+            RESOURCE_CREDENTIAL_PARAMS.get(resource.source, frozenset())
+        ),
+        first_copied_at=history.first_copied_at,
+        last_copied_at=history.last_copied_at,
+        copy_count=history.copy_count,
+    )
 
 
 def _resource_source_path(source: str) -> str | None:
@@ -472,6 +517,121 @@ async def create_value_resource(
             RESOURCE_CREDENTIAL_PARAMS.get(source, frozenset())
         ),
     }
+
+
+@router.post(
+    "/value-resources/{resource_id}/copies",
+    response_model=CopiedValueResourceItem,
+    summary="Record a copied value resource",
+    description=(
+        "Records a successful client-side copy for the current account without "
+        "resolving the value or requesting its external source."
+    ),
+)
+async def record_value_resource_copy(
+    resource_id: str = Path(
+        ...,
+        min_length=12,
+        max_length=22,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+):
+    resource = db.get(ValueResource, resource_id)
+    if resource is None:
+        raise HTTPException(status_code=404, detail="Value resource not found")
+
+    now = int(time.time())
+    filters = (
+        AccountValueResource.account_id == account.id,
+        AccountValueResource.resource_id == resource.id,
+    )
+    updated = (
+        db.query(AccountValueResource)
+        .filter(*filters)
+        .update(
+            {
+                AccountValueResource.last_copied_at: now,
+                AccountValueResource.copy_count: AccountValueResource.copy_count + 1,
+            },
+            synchronize_session=False,
+        )
+    )
+    if updated == 0:
+        db.add(
+            AccountValueResource(
+                account_id=account.id,
+                resource_id=resource.id,
+                first_copied_at=now,
+                last_copied_at=now,
+                copy_count=1,
+            )
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            (
+                db.query(AccountValueResource)
+                .filter(*filters)
+                .update(
+                    {
+                        AccountValueResource.last_copied_at: now,
+                        AccountValueResource.copy_count: (
+                            AccountValueResource.copy_count + 1
+                        ),
+                    },
+                    synchronize_session=False,
+                )
+            )
+            db.commit()
+    else:
+        db.commit()
+
+    history = db.query(AccountValueResource).filter(*filters).one()
+    return _copied_resource_item(history, resource)
+
+
+@router.get(
+    "/value-resources/mine",
+    response_model=CopiedValueResourcesPage,
+    summary="List copied value resources",
+    description=(
+        "Returns the current account's unique copied resources without credentials "
+        "or authorization tokens, newest first."
+    ),
+)
+async def list_copied_value_resources(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+):
+    history_query = db.query(AccountValueResource).filter(
+        AccountValueResource.account_id == account.id
+    )
+    total = history_query.count()
+    rows = (
+        history_query.join(
+            ValueResource,
+            ValueResource.id == AccountValueResource.resource_id,
+        )
+        .with_entities(AccountValueResource, ValueResource)
+        .order_by(
+            AccountValueResource.last_copied_at.desc(),
+            AccountValueResource.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return CopiedValueResourcesPage(
+        items=[_copied_resource_item(history, resource) for history, resource in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get(

@@ -69,6 +69,37 @@ class ValueResource(Base):
     created_at = Column(Integer, nullable=False)
 
 
+class AccountValueResource(Base):
+    __tablename__ = "account_value_resource"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "resource_id",
+            name="uq_account_value_resource_account_resource",
+        ),
+        Index(
+            "ix_account_value_resource_account_last_copied",
+            "account_id",
+            "last_copied_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(
+        String,
+        ForeignKey("account.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    resource_id = Column(
+        String(22),
+        ForeignKey("value_resource.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    first_copied_at = Column(Integer, nullable=False)
+    last_copied_at = Column(Integer, nullable=False)
+    copy_count = Column(Integer, nullable=False, default=1)
+
+
 class UsageDaily(Base):
     __tablename__ = "usage_daily"
     __table_args__ = (
