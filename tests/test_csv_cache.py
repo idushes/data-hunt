@@ -8,7 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.testclient import TestClient
 
-from csv_cache import CSVCacheMiddleware, CSVMemoryCacheMiddleware
+from csv_cache import (
+    CSVCacheMiddleware,
+    CSVMemoryCacheMiddleware,
+    csv_cache_digest,
+    load_cached_csv_previews,
+    redis_csv_cache_key,
+)
 from csv_cache import CACHE_FORCE_REFRESH_HEADER
 from value_rate_limit import (
     DATA_ACCESS_INTERNAL_HEADER,
@@ -36,6 +42,9 @@ class FakeRedis:
     async def expire(self, key: str, seconds: int):
         self.expirations[key] = seconds
         return key in self.hashes
+
+    async def ttl(self, key: str):
+        return self.expirations.get(key, -1)
 
     def pipeline(self, transaction=True):
         return FakeRedisPipeline(self)
@@ -75,13 +84,25 @@ class FakeRedisPipeline:
         self.commands.append(("expire", key, seconds))
         return self
 
+    def hgetall(self, key: str):
+        self.commands.append(("hgetall", key, None))
+        return self
+
+    def ttl(self, key: str):
+        self.commands.append(("ttl", key, None))
+        return self
+
     async def execute(self):
         results = []
         for command, key, value in self.commands:
             if command == "hset":
                 results.append(await self.redis.hset(key, value))
-            else:
+            elif command == "expire":
                 results.append(await self.redis.expire(key, value))
+            elif command == "hgetall":
+                results.append(await self.redis.hgetall(key))
+            else:
+                results.append(await self.redis.ttl(key))
         return results
 
 
@@ -338,6 +359,34 @@ class CSVRedisCacheTest(unittest.IsolatedAsyncioTestCase):
         stale_key = next(key for key in cache_keys if ":stale:" in key)
         self.assertEqual(redis.expirations[fresh_key], 60)
         self.assertEqual(redis.expirations[stale_key], 86400)
+        self.assertIn(b"updated_at", redis.hashes[fresh_key])
+        self.assertIn(b"updated_at", redis.hashes[stale_key])
+
+    async def test_reads_cached_preview_without_calling_the_application(self):
+        redis = FakeRedis()
+        digest = csv_cache_digest(
+            method="GET",
+            path="/v/AbCdEf123456",
+            query_items=[("auth_token", "ignored")],
+        )
+        stale_key = redis_csv_cache_key(digest, stale=True)
+        redis.hashes[stale_key] = {
+            b"body": b"123.45",
+            b"status_code": b"200",
+            b"headers": b"[]",
+            b"updated_at": b"1700000000",
+        }
+        redis.expirations[stale_key] = 86000
+
+        previews = await load_cached_csv_previews(
+            redis,
+            [("AbCdEf123456", "/v/AbCdEf123456", [])],
+            stale_ttl_seconds=86400,
+        )
+
+        self.assertEqual(previews["AbCdEf123456"].body, b"123.45")
+        self.assertEqual(previews["AbCdEf123456"].updated_at, 1700000000)
+        self.assertEqual(previews["AbCdEf123456"].cache_status, "stale")
 
     async def test_distributed_single_flight_coalesces_instances(self):
         redis = FakeRedis()

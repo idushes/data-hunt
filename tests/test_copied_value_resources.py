@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from database import Base, get_db
 from dependencies import get_current_account
+from csv_cache import CachedCSVPreview
 from models import Account, AccountValueResource, ValueResource
 from routers.value import router
 
@@ -181,15 +182,121 @@ class CopiedValueResourcesTest(unittest.TestCase):
         self.assertNotIn("auth_token", serialized)
         self.assertNotIn("dhc1.", serialized)
 
+    def test_previews_return_cached_value_and_data_freshness_only(self):
+        resource_id = self._create_resource()
+        self._record_copy(resource_id)
+        cached = {
+            resource_id: CachedCSVPreview(
+                body=b"12966.07",
+                updated_at=1700000000,
+                cache_status="stale",
+            )
+        }
+
+        with (
+            patch("routers.value.get_redis_client", return_value=object()),
+            patch(
+                "routers.value.load_cached_csv_previews",
+                new=AsyncMock(return_value=cached),
+            ) as load_previews,
+            patch("routers.value._request_source", new=AsyncMock()) as source_request,
+        ):
+            response = self.client.post(
+                "/value-resources/previews",
+                json={"resource_ids": [resource_id], "credentials": {}},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json()["items"],
+            [
+                {
+                    "id": resource_id,
+                    "value": "12966.07",
+                    "data_updated_at": 1700000000,
+                    "cache_status": "stale",
+                }
+            ],
+        )
+        source_request.assert_not_awaited()
+        cache_requests = load_previews.await_args.args[1]
+        self.assertEqual(cache_requests[0][0], resource_id)
+        self.assertEqual(cache_requests[0][1], f"/v/{resource_id}")
+        self.assertIn(("chain_id", "1"), cache_requests[0][2])
+
+    def test_preview_credentials_are_used_only_for_the_cache_lookup(self):
+        resource_id = self._create_resource(
+            source="binance",
+            key="binance:total",
+            column="total_equity_usd",
+            parameters={"include_futures": "true"},
+        )
+        self._record_copy(resource_id)
+
+        async def cached_for_capsule(_client, requests, **_kwargs):
+            query = dict(requests[0][2])
+            if query.get("capsule") != "right-capsule":
+                return {}
+            return {
+                resource_id: CachedCSVPreview(
+                    body=b"236.70",
+                    updated_at=1700000000,
+                    cache_status="fresh",
+                )
+            }
+
+        with (
+            patch("routers.value.get_redis_client", return_value=object()),
+            patch(
+                "routers.value.load_cached_csv_previews",
+                new=AsyncMock(side_effect=cached_for_capsule),
+            ),
+        ):
+            missing = self.client.post(
+                "/value-resources/previews",
+                json={
+                    "resource_ids": [resource_id],
+                    "credentials": {"binance": {"capsule": "wrong-capsule"}},
+                },
+            )
+            found = self.client.post(
+                "/value-resources/previews",
+                json={
+                    "resource_ids": [resource_id],
+                    "credentials": {"binance": {"capsule": "right-capsule"}},
+                },
+            )
+
+        self.assertEqual(missing.json()["items"][0]["cache_status"], "missing")
+        self.assertEqual(found.json()["items"][0]["value"], "236.70")
+        self.assertNotIn("capsule", found.text)
+
+    def test_preview_rejects_resources_from_another_account(self):
+        resource_id = self._create_resource()
+        self._record_copy(resource_id)
+        self.current_account = self.second_account
+
+        response = self.client.post(
+            "/value-resources/previews",
+            json={"resource_ids": [resource_id]},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
     def test_history_endpoints_require_authentication(self):
         resource_id = self._create_resource()
         del self.app.dependency_overrides[get_current_account]
 
         listed = self.client.get("/value-resources/mine")
         recorded = self.client.post(f"/value-resources/{resource_id}/copies")
+        previewed = self.client.post(
+            "/value-resources/previews",
+            json={"resource_ids": [resource_id]},
+        )
 
         self.assertEqual(listed.status_code, 401)
         self.assertEqual(recorded.status_code, 401)
+        self.assertEqual(previewed.status_code, 401)
 
 
 if __name__ == "__main__":

@@ -149,6 +149,14 @@ class ValueResourcesTest(unittest.TestCase):
         self.assertEqual(loaded.headers["x-csv-cache"], "MISS")
         self.assertEqual(short.headers["x-csv-cache"], "MISS")
         self.assertEqual(repeated.headers["x-csv-cache"], "HIT")
+        self.assertEqual(
+            short.headers["x-data-updated-at"],
+            loaded.headers["x-data-updated-at"],
+        )
+        self.assertEqual(
+            repeated.headers["x-data-updated-at"],
+            loaded.headers["x-data-updated-at"],
+        )
         self.assertEqual(short.text, "123.45")
         self.assertEqual(self.source_calls, 1)
 

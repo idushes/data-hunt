@@ -3,18 +3,24 @@ import csv
 import hashlib
 import io
 import json
+import re
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from pydantic import BaseModel, Field
+from redis.exceptions import RedisError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from config import CSV_CACHE_STALE_TTL_SECONDS
+from csv_cache import DATA_UPDATED_AT_HEADER, load_cached_csv_previews
 from database import get_db
 from dependencies import get_current_account
 from models import Account, AccountValueResource, ValueResource
+from redis_client import get_redis_client
 from value_rate_limit import (
     DATA_ACCESS_INTERNAL_HEADER,
     DATA_ACCESS_INTERNAL_TOKEN,
@@ -95,6 +101,7 @@ RESOURCE_CREDENTIAL_PARAMS = {
 }
 RESOURCE_ID_MIN_BYTES = 9
 RESOURCE_ID_MAX_BYTES = 16
+RESOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,22}$")
 
 router = APIRouter(tags=["values"])
 
@@ -123,6 +130,22 @@ class CopiedValueResourcesPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class CachedValuePreviewsRequest(BaseModel):
+    resource_ids: list[str] = Field(min_length=1, max_length=100)
+    credentials: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+class CachedValuePreviewItem(BaseModel):
+    id: str
+    value: str | None
+    data_updated_at: int | None
+    cache_status: Literal["fresh", "stale", "missing"]
+
+
+class CachedValuePreviewsResponse(BaseModel):
+    items: list[CachedValuePreviewItem]
 
 
 def _copied_resource_item(
@@ -309,6 +332,26 @@ def _render_single_cell(value: str) -> str:
     return output.getvalue().rstrip("\r\n")
 
 
+def _cached_single_cell(body: bytes) -> str | None:
+    try:
+        rows = [row for row in csv.reader(io.StringIO(body.decode())) if row]
+    except (UnicodeDecodeError, csv.Error):
+        return None
+    if len(rows) != 1 or len(rows[0]) != 1:
+        return None
+    return rows[0][0]
+
+
+def _forward_data_timestamp(
+    source_response: httpx.Response,
+    headers: dict[str, str],
+) -> dict[str, str]:
+    updated_at = source_response.headers.get(DATA_UPDATED_AT_HEADER)
+    if updated_at:
+        headers[DATA_UPDATED_AT_HEADER] = updated_at
+    return headers
+
+
 def _stable_key_candidates(source: str, key: str) -> tuple[str, ...]:
     if source != "stablecoins":
         return (key,)
@@ -418,10 +461,13 @@ async def _resolve_stable_value(
     return Response(
         content=_render_single_cell(matches[0].get(column) or ""),
         media_type="text/csv",
-        headers={
-            "X-Value-Source": source,
-            "X-Value-Key-Column": source_config.key_column,
-        },
+        headers=_forward_data_timestamp(
+            source_response,
+            {
+                "X-Value-Source": source,
+                "X-Value-Key-Column": source_config.key_column,
+            },
+        ),
     )
 
 
@@ -456,7 +502,10 @@ async def _resolve_direct_value(
     return Response(
         content=_render_single_cell(value),
         media_type="text/csv",
-        headers={"X-Value-Source": source},
+        headers=_forward_data_timestamp(
+            source_response,
+            {"X-Value-Source": source},
+        ),
     )
 
 
@@ -632,6 +681,102 @@ async def list_copied_value_resources(
         limit=limit,
         offset=offset,
     )
+
+
+@router.post(
+    "/value-resources/previews",
+    response_model=CachedValuePreviewsResponse,
+    summary="Read cached previews for copied resources",
+    description=(
+        "Returns cached values and their last successful data timestamp without "
+        "calling external sources. Credentials are used only to locate the matching "
+        "Redis cache entry and are never stored."
+    ),
+)
+async def preview_copied_value_resources(
+    payload: CachedValuePreviewsRequest,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+):
+    resource_ids = list(dict.fromkeys(payload.resource_ids))
+    if any(not RESOURCE_ID_PATTERN.fullmatch(value) for value in resource_ids):
+        raise HTTPException(status_code=400, detail="Invalid resource ID")
+
+    rows = (
+        db.query(ValueResource)
+        .join(
+            AccountValueResource,
+            AccountValueResource.resource_id == ValueResource.id,
+        )
+        .filter(
+            AccountValueResource.account_id == account.id,
+            ValueResource.id.in_(resource_ids),
+        )
+        .all()
+    )
+    resources = {resource.id: resource for resource in rows}
+    if len(resources) != len(resource_ids):
+        raise HTTPException(status_code=404, detail="Copied resource not found")
+
+    if len(payload.credentials) > len(RESOURCE_CREDENTIAL_PARAMS):
+        raise HTTPException(status_code=400, detail="Too many credential sources")
+    credentials: dict[str, dict[str, str]] = {}
+    for source, supplied in payload.credentials.items():
+        allowed = RESOURCE_CREDENTIAL_PARAMS.get(source)
+        if not allowed:
+            raise HTTPException(status_code=400, detail="Unsupported credential source")
+        if len(supplied) > len(allowed):
+            raise HTTPException(status_code=400, detail="Too many credentials")
+        normalized: dict[str, str] = {}
+        for name, value in supplied.items():
+            if name not in allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported credential parameter '{name}'",
+                )
+            if len(value) > 65536:
+                raise HTTPException(status_code=400, detail="Credential is too long")
+            if value:
+                normalized[name] = value
+        credentials[source] = normalized
+
+    cache_requests = []
+    for resource_id in resource_ids:
+        resource = resources[resource_id]
+        parameters = resource.parameters if isinstance(resource.parameters, dict) else {}
+        query_items = [(str(name), str(value)) for name, value in parameters.items()]
+        query_items.extend(credentials.get(resource.source, {}).items())
+        cache_requests.append((resource_id, f"/v/{resource_id}", query_items))
+
+    cached = {}
+    client = get_redis_client()
+    if client is not None:
+        try:
+            cached = await load_cached_csv_previews(
+                client,
+                cache_requests,
+                stale_ttl_seconds=CSV_CACHE_STALE_TTL_SECONDS,
+            )
+        except RedisError:
+            cached = {}
+
+    items = []
+    for resource_id in resource_ids:
+        preview = cached.get(resource_id)
+        value = _cached_single_cell(preview.body) if preview is not None else None
+        items.append(
+            CachedValuePreviewItem(
+                id=resource_id,
+                value=value,
+                data_updated_at=preview.updated_at if preview is not None else None,
+                cache_status=(
+                    preview.cache_status
+                    if preview is not None and value is not None
+                    else "missing"
+                ),
+            )
+        )
+    return CachedValuePreviewsResponse(items=items)
 
 
 @router.get(

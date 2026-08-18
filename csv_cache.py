@@ -7,7 +7,7 @@ import secrets
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 from urllib.parse import parse_qsl, urlencode
 
 from fastapi import Request, Response
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_BUSTER_PARAMS = {"_", "cache_bust", "refresh", "auth_token"}
 CACHE_FORCE_REFRESH_HEADER = "x-datahunt-force-cache-refresh"
+DATA_UPDATED_AT_HEADER = "x-data-updated-at"
 RELEASE_LOCK_SCRIPT = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
     return redis.call('DEL', KEYS[1])
@@ -40,6 +41,100 @@ class CachedCSVResponse:
     body: bytes
     status_code: int
     raw_headers: tuple[tuple[bytes, bytes], ...]
+    updated_at: int | None = None
+
+
+@dataclass(frozen=True)
+class CachedCSVPreview:
+    body: bytes
+    updated_at: int | None
+    cache_status: str
+
+
+def csv_cache_digest(
+    *,
+    method: str,
+    path: str,
+    query_items: Iterable[tuple[str, str]],
+    authorization: str = "",
+    cookie: str = "",
+) -> str:
+    filtered_query = [
+        (key, value)
+        for key, value in query_items
+        if key.lower() not in CACHE_BUSTER_PARAMS
+    ]
+    filtered_query.sort()
+    key_material = "\n".join(
+        [
+            method.upper(),
+            path,
+            urlencode(filtered_query, doseq=True),
+            authorization,
+            cookie,
+        ]
+    )
+    return hashlib.sha256(key_material.encode()).hexdigest()
+
+
+def redis_csv_cache_key(digest: str, *, stale: bool = False) -> str:
+    prefix = "datahunt:csv:stale:v1:" if stale else "datahunt:csv:v1:"
+    return f"{prefix}{digest}"
+
+
+def _mapping_value(mapping: dict, name: str):
+    return mapping.get(name.encode()) or mapping.get(name)
+
+
+async def load_cached_csv_previews(
+    client: Redis,
+    requests: list[tuple[str, str, list[tuple[str, str]]]],
+    *,
+    stale_ttl_seconds: int,
+) -> dict[str, CachedCSVPreview]:
+    """Read cached one-cell CSV responses in one Redis round trip."""
+    if not requests:
+        return {}
+
+    digests = [
+        csv_cache_digest(method="GET", path=path, query_items=query_items)
+        for _, path, query_items in requests
+    ]
+    async with client.pipeline(transaction=False) as pipeline:
+        for digest in digests:
+            pipeline.hgetall(redis_csv_cache_key(digest))
+            pipeline.hgetall(redis_csv_cache_key(digest, stale=True))
+            pipeline.ttl(redis_csv_cache_key(digest, stale=True))
+        results = await pipeline.execute()
+
+    now = int(time.time())
+    previews: dict[str, CachedCSVPreview] = {}
+    for index, (resource_id, _, _) in enumerate(requests):
+        fresh = results[index * 3]
+        stale = results[index * 3 + 1]
+        stale_ttl = int(results[index * 3 + 2])
+        payload = fresh or stale
+        if not payload:
+            continue
+        body = _mapping_value(payload, "body")
+        if body is None:
+            continue
+        if not isinstance(body, bytes):
+            body = str(body).encode()
+        raw_updated_at = _mapping_value(payload, "updated_at")
+        try:
+            updated_at = int(raw_updated_at) if raw_updated_at is not None else None
+        except (TypeError, ValueError):
+            updated_at = None
+        if updated_at is None and stale_ttl >= 0:
+            elapsed = max(0, stale_ttl_seconds - stale_ttl)
+            updated_at = now - elapsed
+        previews[resource_id] = CachedCSVPreview(
+            body=body,
+            updated_at=updated_at,
+            cache_status="fresh" if fresh else "stale",
+        )
+    return previews
 
 
 RequestResponseEndpoint = Callable[[Request], Awaitable[Response]]
@@ -77,30 +172,21 @@ class CSVCacheMiddleware:
 
     @staticmethod
     def _cache_key(request: Request) -> str:
-        query_items = [
-            (key, value)
-            for key, value in parse_qsl(request.url.query, keep_blank_values=True)
-            if key.lower() not in CACHE_BUSTER_PARAMS
-        ]
-        query_items.sort()
-        key_material = "\n".join(
-            [
-                request.method.upper(),
-                request.url.path,
-                urlencode(query_items, doseq=True),
-                request.headers.get("authorization", ""),
-                request.headers.get("cookie", ""),
-            ]
+        return csv_cache_digest(
+            method=request.method,
+            path=request.url.path,
+            query_items=parse_qsl(request.url.query, keep_blank_values=True),
+            authorization=request.headers.get("authorization", ""),
+            cookie=request.headers.get("cookie", ""),
         )
-        return hashlib.sha256(key_material.encode()).hexdigest()
 
     @staticmethod
     def _redis_cache_key(key: str) -> str:
-        return f"datahunt:csv:v1:{key}"
+        return redis_csv_cache_key(key)
 
     @staticmethod
     def _redis_stale_key(key: str) -> str:
-        return f"datahunt:csv:stale:v1:{key}"
+        return redis_csv_cache_key(key, stale=True)
 
     @staticmethod
     def _redis_lock_key(key: str) -> str:
@@ -149,9 +235,10 @@ class CSVCacheMiddleware:
             payload = await client.hgetall(redis_key)
             if not payload:
                 return None
-            body = payload.get(b"body") or payload.get("body")
-            status_code = payload.get(b"status_code") or payload.get("status_code")
-            headers_payload = payload.get(b"headers") or payload.get("headers")
+            body = _mapping_value(payload, "body")
+            status_code = _mapping_value(payload, "status_code")
+            headers_payload = _mapping_value(payload, "headers")
+            updated_at = _mapping_value(payload, "updated_at")
             if body is None or status_code is None or headers_payload is None:
                 return None
             if isinstance(headers_payload, bytes):
@@ -169,6 +256,7 @@ class CSVCacheMiddleware:
                 body=body if isinstance(body, bytes) else body.encode(),
                 status_code=int(status_code),
                 raw_headers=raw_headers,
+                updated_at=int(updated_at) if updated_at is not None else None,
             )
         except (RedisError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self._warn_redis(exc)
@@ -195,6 +283,7 @@ class CSVCacheMiddleware:
                 "body": cached.body,
                 "status_code": str(cached.status_code),
                 "headers": headers_payload,
+                "updated_at": str(cached.updated_at or int(time.time())),
             }
             async with client.pipeline(transaction=True) as pipeline:
                 pipeline.hset(redis_key, mapping=mapping)
@@ -267,6 +356,8 @@ class CSVCacheMiddleware:
         response.raw_headers = list(cached.raw_headers)
         response.headers["X-CSV-Cache"] = cache_status
         response.headers["X-CSV-Cache-Backend"] = backend
+        if cached.updated_at is not None:
+            response.headers[DATA_UPDATED_AT_HEADER] = str(cached.updated_at)
         return response
 
     def _retain_background_refresh(self, task: asyncio.Task[Response]) -> None:
@@ -332,11 +423,17 @@ class CSVCacheMiddleware:
             for header, value in response.raw_headers
             if header.lower() not in {b"x-csv-cache", b"x-csv-cache-backend"}
         )
+        reported_updated_at = response.headers.get(DATA_UPDATED_AT_HEADER)
+        try:
+            updated_at = int(reported_updated_at) if reported_updated_at else int(time.time())
+        except ValueError:
+            updated_at = int(time.time())
         cached = CachedCSVResponse(
             expires_at=time.monotonic() + self.ttl_seconds,
             body=body,
             status_code=response.status_code,
             raw_headers=raw_headers,
+            updated_at=updated_at,
         )
         if backend == "redis":
             stored_in_redis = await self._set_redis(key, cached)
@@ -354,6 +451,7 @@ class CSVCacheMiddleware:
         fresh_response.raw_headers = list(raw_headers)
         fresh_response.headers["X-CSV-Cache"] = "MISS"
         fresh_response.headers["X-CSV-Cache-Backend"] = backend
+        fresh_response.headers[DATA_UPDATED_AT_HEADER] = str(updated_at)
         return fresh_response
 
     async def _dispatch_memory(
