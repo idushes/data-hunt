@@ -27,6 +27,7 @@ def _payload():
                 {
                     "market": {
                         "marketId": MARKET,
+                        "lltv": "860000000000000000",
                         "loanAsset": {
                             "address": USDC,
                             "symbol": "USDC",
@@ -51,7 +52,10 @@ def _payload():
                     },
                 },
                 {
-                    "market": {"marketId": "0x" + "90" * 32},
+                    "market": {
+                        "marketId": "0x" + "90" * 32,
+                        "lltv": "860000000000000000",
+                    },
                     "state": {
                         "supplyAssets": 0,
                         "borrowAssets": 0,
@@ -115,6 +119,8 @@ class MorphoParserTest(unittest.TestCase):
         self.assertEqual(market["supply_amount"], "100")
         self.assertEqual(market["borrow_amount"], "25")
         self.assertEqual(market["collateral_amount"], "0.1")
+        self.assertEqual(market["ltv_percent"], "8.333333333333333333333333333")
+        self.assertEqual(market["liquidation_threshold_percent"], "86")
         self.assertEqual(market["net_usd"], "375")
         vault = next(row for row in rows if row["position_type"] == "vault_v1")
         self.assertEqual(vault["supply_amount"], "500")
@@ -181,6 +187,9 @@ class MorphoFetchTest(unittest.IsolatedAsyncioTestCase):
 
         parsed = list(csv.DictReader(io.StringIO(response.body.decode())))
         self.assertEqual(len(parsed), 3)
+        market = next(row for row in parsed if row["position_type"] == "market")
+        self.assertEqual(market["ltv_percent"], "8.333333333333333333333333333")
+        self.assertEqual(market["liquidation_threshold_percent"], "86")
         vault_v2 = next(row for row in parsed if row["position_type"] == "vault_v2")
         self.assertEqual(vault_v2["net_apy_percent"], "11.98")
         self.assertEqual(response.headers["cache-control"], "public, max-age=60")

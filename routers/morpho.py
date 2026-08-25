@@ -52,6 +52,8 @@ MORPHO_CSV_HEADER = [
     "borrow_apy_percent",
     "collateral_amount",
     "collateral_usd",
+    "ltv_percent",
+    "liquidation_threshold_percent",
     "shares",
     "net_usd",
 ]
@@ -63,6 +65,7 @@ query MorphoPositions($address: String!, $chainId: Int!) {
     marketPositions {
       market {
         marketId
+        lltv
         loanAsset { address symbol name decimals }
         collateralAsset { address symbol name decimals }
         state { supplyApy borrowApy }
@@ -148,6 +151,18 @@ def _apy_percent(value: object | None) -> str:
     return _format_decimal(_decimal(value) * Decimal(100))
 
 
+def _wad_percent(value: object | None) -> str:
+    return _format_decimal(_decimal(value) / Decimal("1e16"))
+
+
+def _ratio_percent(numerator: Decimal, denominator: Decimal) -> str:
+    if denominator <= 0:
+        return ""
+    with localcontext() as context:
+        context.prec = 28
+        return _format_decimal(numerator / denominator * Decimal(100))
+
+
 def _base_row(wallet: str, chain_id: int) -> dict[str, str]:
     row = {column: "" for column in MORPHO_CSV_HEADER}
     row.update(
@@ -226,6 +241,10 @@ def _parse_market_rows(
                 ),
                 "collateral_amount": _format_decimal(collateral_amount),
                 "collateral_usd": _format_decimal(collateral_usd),
+                "ltv_percent": _ratio_percent(borrow_usd, collateral_usd),
+                "liquidation_threshold_percent": _wad_percent(
+                    market.get("lltv")
+                ),
                 "net_usd": _format_decimal(
                     supply_usd + collateral_usd - borrow_usd
                 ),
