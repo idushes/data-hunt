@@ -17,6 +17,20 @@ store only daily request counts grouped by internal account ID, source, and
 response class. Wallet addresses, IP addresses, query parameters, formulas,
 and credentials are not stored in analytics.
 
+## Google authentication
+
+Set `GOOGLE_CLIENT_ID` to the OAuth 2.0 Web client ID used by Google Identity
+Services on the frontend:
+
+```env
+GOOGLE_CLIENT_ID=1234567890-example.apps.googleusercontent.com
+```
+
+`POST /web3/google/login` accepts the Google ID credential, verifies its
+signature and audience on the server, and returns the same Data Hunt session
+token used by wallet login. Google accounts are keyed only by Google's stable
+`sub` identifier; email addresses and Google access tokens are not stored.
+
 ## Redis cache and outbound queues
 
 `REDIS_URL` enables the shared CSV cache, distributed single-flight, and

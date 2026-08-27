@@ -1,14 +1,23 @@
 from datetime import datetime, timezone
 from typing import List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from eth_account import Account as EthAccount
 from eth_account.messages import encode_defunct
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from database import get_db
-from models import Account, AccountAddress, AccountToken
+from google_identity import (
+    GoogleIdentityNotConfiguredError,
+    GoogleIdentityUnavailableError,
+    GoogleIdentityVerificationError,
+    verify_google_identity_token,
+)
+from models import Account, AccountAddress, AccountIdentity, AccountToken
 from security import create_access_token, create_sheets_access_token
 from utils import get_valid_chain_ids
 from dependencies import (
@@ -24,6 +33,10 @@ class SignatureVerification(BaseModel):
     address: str
     message: str
     signature: str
+
+
+class GoogleCredential(BaseModel):
+    credential: str = Field(min_length=1, max_length=8192)
 
 
 class TokenResponse(BaseModel):
@@ -48,6 +61,24 @@ class SheetsTokenResponse(BaseModel):
     access_token: str
     token_type: str
     account_id: str
+
+
+def _create_session_token(
+    db: Session,
+    account: Account,
+    claims: dict,
+) -> str:
+    token = AccountToken(
+        account_id=account.id,
+        created_at=int(datetime.now(timezone.utc).timestamp()),
+        is_active=True,
+        purpose="session",
+    )
+    db.add(token)
+    db.flush()
+    return create_access_token(
+        data={"sub": account.id, "jti": token.id, **claims}
+    )
 
 
 @router.post(
@@ -142,6 +173,106 @@ async def login(data: SignatureVerification, db: Session = Depends(get_db)):
 
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post(
+    "/google/login",
+    response_model=TokenResponse,
+    summary="Google Login / Registration",
+    description=(
+        "Authenticates a user with a server-verified Google ID token. Creates a "
+        "new account for a previously unseen Google subject and returns the same "
+        "Data Hunt session token used by wallet authentication."
+    ),
+)
+async def google_login(data: GoogleCredential, db: Session = Depends(get_db)):
+    try:
+        subject = await run_in_threadpool(
+            verify_google_identity_token,
+            data.credential,
+        )
+    except GoogleIdentityNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Google login is not configured",
+        ) from exc
+    except GoogleIdentityVerificationError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Google credential",
+        ) from exc
+    except GoogleIdentityUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Google login is temporarily unavailable",
+        ) from exc
+
+    identity = (
+        db.query(AccountIdentity)
+        .filter(
+            AccountIdentity.provider == "google",
+            AccountIdentity.subject == subject,
+        )
+        .first()
+    )
+    is_new_account = identity is None
+
+    if identity is None:
+        account_id = str(uuid.uuid4())
+        account = Account(
+            id=account_id,
+            init_address=f"google:{account_id}",
+            init_address_network="google",
+        )
+        identity = AccountIdentity(
+            account_id=account_id,
+            provider="google",
+            subject=subject,
+            created_at=int(datetime.now(timezone.utc).timestamp()),
+        )
+        db.add_all([account, identity])
+        try:
+            db.flush()
+        except IntegrityError:
+            # A concurrent first login may have created the same identity.
+            db.rollback()
+            identity = (
+                db.query(AccountIdentity)
+                .filter(
+                    AccountIdentity.provider == "google",
+                    AccountIdentity.subject == subject,
+                )
+                .first()
+            )
+            if identity is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Google account could not be created",
+                )
+            account = identity.account
+            is_new_account = False
+    else:
+        account = identity.account
+
+    try:
+        access_token = _create_session_token(
+            db,
+            account,
+            {"auth_provider": "google"},
+        )
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create a login session",
+        ) from exc
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "is_new_account": is_new_account,
+    }
 
 
 @router.post(

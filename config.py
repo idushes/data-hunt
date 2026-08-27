@@ -66,3 +66,4 @@ FEATURE_REQUEST_ADMIN_ADDRESSES = frozenset(
     for address in os.environ.get("FEATURE_REQUEST_ADMIN_ADDRESSES", "").split(",")
     if address.strip()
 )
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()

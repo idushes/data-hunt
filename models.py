@@ -25,6 +25,7 @@ class Account(Base):
     balance = Column(Float, default=0.0)
 
     addresses = relationship("AccountAddress", back_populates="account")
+    identities = relationship("AccountIdentity", back_populates="account")
 
 
 class AccountAddress(Base):
@@ -37,6 +38,30 @@ class AccountAddress(Base):
     can_auth = Column(Boolean, default=False)
 
     account = relationship("Account", back_populates="addresses")
+
+
+class AccountIdentity(Base):
+    __tablename__ = "account_identity"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "subject",
+            name="uq_account_identity_provider_subject",
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    account_id = Column(
+        String,
+        ForeignKey("account.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider = Column(String(32), nullable=False)
+    subject = Column(String(255), nullable=False)
+    created_at = Column(Integer, nullable=False)
+
+    account = relationship("Account", back_populates="identities")
 
 
 class AccountToken(Base):
