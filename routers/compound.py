@@ -3,7 +3,7 @@ import io
 import os
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
 import httpx
@@ -94,6 +94,11 @@ COMPOUND_CSV_HEADER = [
     "borrow_apy_percent",
     "is_liquidatable",
     "net_usd",
+    "ltv_percent",
+    "borrow_capacity_usd",
+    "liquidation_capacity_usd",
+    "liquidation_usage_percent",
+    "health_factor",
 ]
 
 ASSET_INFO_TYPES = [
@@ -202,6 +207,52 @@ def _apy(raw_rate: int) -> Decimal:
     return Decimal(raw_rate) * SECONDS_PER_YEAR * Decimal(100) / FACTOR_SCALE
 
 
+def _ratio_percent(numerator: Decimal, denominator: Decimal) -> str:
+    if denominator <= 0:
+        return ""
+    with localcontext() as context:
+        context.prec = 28
+        return _format(numerator / denominator * Decimal(100))
+
+
+def _market_risk_metrics(
+    borrow_usd: Decimal,
+    collateral: list[tuple[Decimal, int, int]],
+) -> dict[str, str]:
+    with localcontext() as context:
+        context.prec = 28
+        collateral_usd = sum((item[0] for item in collateral), Decimal(0))
+        borrow_capacity_usd = sum(
+            (
+                value_usd * Decimal(borrow_factor) / FACTOR_SCALE
+                for value_usd, borrow_factor, _liquidate_factor in collateral
+            ),
+            Decimal(0),
+        )
+        liquidation_capacity_usd = sum(
+            (
+                value_usd * Decimal(liquidate_factor) / FACTOR_SCALE
+                for value_usd, _borrow_factor, liquidate_factor in collateral
+            ),
+            Decimal(0),
+        )
+        health_factor = (
+            _format(liquidation_capacity_usd / borrow_usd)
+            if borrow_usd > 0
+            else ""
+        )
+    return {
+        "ltv_percent": _ratio_percent(borrow_usd, collateral_usd),
+        "borrow_capacity_usd": _format(borrow_capacity_usd),
+        "liquidation_capacity_usd": _format(liquidation_capacity_usd),
+        "liquidation_usage_percent": _ratio_percent(
+            borrow_usd,
+            liquidation_capacity_usd,
+        ),
+        "health_factor": health_factor,
+    }
+
+
 def _base_row(
     wallet: str,
     chain_id: int,
@@ -280,6 +331,8 @@ async def _fetch_market_rows(
             "address": str(value[1]).lower(),
             "price_feed": str(value[2]),
             "scale": int(value[3]),
+            "borrow_collateral_factor": int(value[4]),
+            "liquidate_collateral_factor": int(value[5]),
         }
         for value in asset_info_values
     ]
@@ -329,11 +382,34 @@ async def _fetch_market_rows(
     supply_rate = int(second[1][0])
     borrow_rate = int(second[2][0])
 
-    rows = []
     supply_amount = _amount(supply_raw, base_scale)
     borrow_amount = _amount(borrow_raw, base_scale)
     supply_usd = _usd(supply_amount, base_price, price_scale)
     borrow_usd = _usd(borrow_amount, base_price, price_scale)
+
+    collateral_positions = []
+    for index, asset in enumerate(asset_infos):
+        balance_raw = int(second[3 + index * 2][0])
+        if balance_raw == 0:
+            continue
+        price_raw = int(second[4 + index * 2][0])
+        balance = _amount(balance_raw, int(asset["scale"]))
+        balance_usd = _usd(balance, price_raw, price_scale)
+        collateral_positions.append((asset, balance, balance_usd))
+
+    risk_metrics = _market_risk_metrics(
+        borrow_usd,
+        [
+            (
+                balance_usd,
+                int(asset["borrow_collateral_factor"]),
+                int(asset["liquidate_collateral_factor"]),
+            )
+            for asset, _balance, balance_usd in collateral_positions
+        ],
+    )
+
+    rows = []
     if supply_raw or borrow_raw:
         row = _base_row(wallet, chain_id, chain, market)
         row.update(
@@ -352,17 +428,12 @@ async def _fetch_market_rows(
                 "borrow_apy_percent": _format(_apy(borrow_rate)),
                 "is_liquidatable": str(is_liquidatable).lower(),
                 "net_usd": _format(supply_usd - borrow_usd),
+                **risk_metrics,
             }
         )
         rows.append(row)
 
-    for index, asset in enumerate(asset_infos):
-        balance_raw = int(second[3 + index * 2][0])
-        if balance_raw == 0:
-            continue
-        price_raw = int(second[4 + index * 2][0])
-        balance = _amount(balance_raw, int(asset["scale"]))
-        balance_usd = _usd(balance, price_raw, price_scale)
+    for asset, balance, balance_usd in collateral_positions:
         row = _base_row(wallet, chain_id, chain, market)
         row.update(
             {
@@ -375,6 +446,7 @@ async def _fetch_market_rows(
                 "balance_usd": _format(balance_usd),
                 "is_liquidatable": str(is_liquidatable).lower(),
                 "net_usd": _format(balance_usd),
+                **risk_metrics,
             }
         )
         rows.append(row)
@@ -415,7 +487,9 @@ def _render_csv(rows: list[dict[str, str]]) -> str:
     summary="Export Compound III positions",
     description=(
         "Reads active base supply/borrow and collateral balances directly from "
-        "official Compound III Comet markets."
+        "official Compound III Comet markets, including market-level LTV, "
+        "weighted borrowing and liquidation capacity, liquidation usage, and "
+        "health factor."
     ),
     responses={200: {"content": {"text/csv": {}}}},
 )

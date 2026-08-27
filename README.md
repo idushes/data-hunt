@@ -77,6 +77,15 @@ may cache claimable reward amounts for up to 24 hours. No Pendle API key is
 required. Responses use the shared 60-second CSV cache and a dedicated outbound
 queue configured below Pendle's published free-tier limit.
 
+## Compound III risk metrics
+
+`GET /compound/positions.csv?address=0x...&chain_id=1` returns each active
+Compound III base and collateral row with market-level risk metrics. LTV uses
+raw collateral value; borrow and liquidation capacities weight every
+collateral asset by the corresponding on-chain Compound factor. The same LTV,
+capacity, liquidation usage, and health factor values are repeated on every row
+from one Comet market so a Sheets lookup by `position_id` remains sufficient.
+
 ## Uniswap V4 positions
 
 `GET /uniswap/v4/positions.csv?address=0x...&chain_id=1` returns owned
