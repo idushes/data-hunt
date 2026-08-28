@@ -10,6 +10,7 @@ from routers.stablecoins import (
     ETHEREUM_TOKENS,
     ARBITRUM_TOKENS,
     BASE_TOKENS,
+    MONAD_TOKENS,
     SOLANA_TOKENS,
     TRON_TOKENS,
     _fetch_evm_balances,
@@ -37,6 +38,7 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
             (ETHEREUM_TOKENS, 17, ("USDC", "USDT")),
             (ARBITRUM_TOKENS, 15, ("USDC", "USDT")),
             (BASE_TOKENS, 16, ("USDC", "USDT")),
+            (MONAD_TOKENS, 1, ("USDC",)),
             (SOLANA_TOKENS, 17, ("USDC", "USDT")),
             (TRON_TOKENS, 6, ("USDT", "USDC")),
         )
@@ -169,6 +171,30 @@ class StablecoinBalanceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["network"], "Base")
         self.assertEqual(rows[0]["balance"], "2")
         self.assertEqual(rows[1]["balance"], "3")
+
+    async def test_reads_monad_native_usdc_balance(self):
+        response = httpx.Response(
+            200,
+            json=[
+                {
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "result": hex(4_250_000),
+                }
+            ],
+            request=httpx.Request("POST", "https://rpc.example"),
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = response
+
+        rows = await _fetch_evm_balances(client, EVM_WALLET, 143)
+
+        self.assertEqual(len(rows), len(MONAD_TOKENS))
+        self.assertEqual(rows[0]["network"], "Monad")
+        self.assertEqual(rows[0]["balance"], "4.25")
+        self.assertEqual(
+            rows[0]["balance_id"], f"evm:143:{EVM_WALLET}:USDC"
+        )
 
     async def test_reads_all_solana_balances_in_two_rpc_requests(self):
         def token_account(mint: str, amount: str, decimals: int):

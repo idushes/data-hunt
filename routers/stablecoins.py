@@ -26,6 +26,7 @@ MAX_WALLETS_PER_REQUEST = 20
 ETHEREUM_RPC_ENDPOINT = "https://ethereum-rpc.publicnode.com"
 ARBITRUM_RPC_ENDPOINT = "https://arbitrum-one-rpc.publicnode.com"
 BASE_RPC_ENDPOINT = "https://base-rpc.publicnode.com"
+MONAD_RPC_ENDPOINT = "https://rpc.monad.xyz"
 STABLECOINS_SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com"
 BALANCE_OF_SELECTOR = "70a08231"
 STABLECOIN_CSV_HEADER = [
@@ -139,6 +140,9 @@ BASE_TOKENS = (
     _token("USD0", "Usual USD", "0x758a3e0b1f842c9306b783f8a4078c6c8c03a270", 18),
     _token("BOLD", "BOLD", "0x03569cc076654f82679c4ba2124d64774781b01d", 18),
 )
+MONAD_TOKENS = (
+    _token("USDC", "USD Coin", "0x754704bc059f8c67012fed69bc8a327a5aafb603", 6),
+)
 EVM_CHAINS = {
     1: {
         "name": "Ethereum",
@@ -157,6 +161,12 @@ EVM_CHAINS = {
         "rpc_env": "STABLECOINS_BASE_RPC_URL",
         "rpc_url": BASE_RPC_ENDPOINT,
         "tokens": BASE_TOKENS,
+    },
+    143: {
+        "name": "Monad",
+        "rpc_env": "STABLECOINS_MONAD_RPC_URL",
+        "rpc_url": MONAD_RPC_ENDPOINT,
+        "tokens": MONAD_TOKENS,
     },
 }
 SOLANA_TOKENS = (
@@ -580,7 +590,9 @@ async def get_stablecoin_balances_csv(
     wallet: str | None = Query(
         None, description="Comma-separated Solana wallet addresses."
     ),
-    chain_id: int = Query(1, description="EVM chain ID: 1, 8453, or 42161."),
+    chain_id: int = Query(
+        1, description="EVM chain ID: 1, 143, 8453, or 42161."
+    ),
     tron_address: str | None = Query(
         None, description="Comma-separated TRON wallet addresses."
     ),
