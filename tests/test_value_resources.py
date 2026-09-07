@@ -1,5 +1,6 @@
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from database import Base, get_db
 from csv_cache import CSVCacheMiddleware
 from models import ValueResource
+from routers import defillama
 from routers.value import (
     DIRECT_VALUE_SOURCES,
     RESOURCE_CREDENTIAL_PARAMS,
@@ -122,6 +124,36 @@ class ValueResourcesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.text, "123.45")
         self.assertTrue(response.headers["content-type"].startswith("text/csv"))
+
+    def test_price_resources_keep_legacy_ids_and_forward_defillama_source_time(self):
+        self.app.include_router(defillama.router)
+        self.app.add_middleware(CSVCacheMiddleware, ttl_seconds=60)
+        timestamp = int(time.time()) - 1200
+        fetch = AsyncMock(return_value=defillama.Price(42.5, timestamp))
+        with (
+            patch("routers.defillama._get_price", fetch),
+            patch("csv_cache.get_redis_client", return_value=None),
+        ):
+            for parameters, coin in (
+                ({"symbol": "PAXG", "convert": "USD"}, "pax-gold"),
+                ({"symbol": "MON", "convert": "USD"}, "monad"),
+                ({"symbol": "wstETH", "convert": "USD"}, "wrapped-steth"),
+                ({"coin": "coingecko:bitcoin"}, "bitcoin"),
+            ):
+                request = {"source": "cmc-price", "parameters": parameters}
+                created = self.client.post("/value-resources", json=request)
+                self.assertEqual(created.status_code, 200, created.text)
+                resource_id = created.json()["id"]
+                repeated = self.client.post("/value-resources", json=request)
+                self.assertEqual(repeated.json()["id"], resource_id)
+                with self.Session() as db:
+                    self.assertEqual(db.get(ValueResource, resource_id).parameters, parameters)
+                for _ in range(2):
+                    response = self.client.get(f"/v/{resource_id}")
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.text, "42.5")
+                    self.assertEqual(response.headers["x-data-updated-at"], str(timestamp))
+                fetch.assert_awaited_with(f"coingecko:{coin}")
 
     def test_loaded_table_cache_is_reused_by_first_short_value_request(self):
         self.app.add_middleware(CSVCacheMiddleware, ttl_seconds=60)

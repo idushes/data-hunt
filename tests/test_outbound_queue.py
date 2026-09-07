@@ -23,7 +23,8 @@ from outbound_queue import (
 class OutboundRequestQueueTest(unittest.IsolatedAsyncioTestCase):
     def test_each_known_host_has_its_own_provider_policy(self):
         expected = {
-            "pro-api.coinmarketcap.com": "coinmarketcap",
+            "coins.llama.fi": "defillama",
+            "api.llama.fi": "defillama",
             "api.coinbase.com": "coinbase",
             "api.bybit.com": "bybit",
             "api.bybit.id": "bybit",

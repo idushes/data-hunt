@@ -46,7 +46,7 @@ class ProviderPolicy:
 # Published limits get headroom. Providers without public limits use deliberately
 # conservative defaults and can be adjusted without code via OUTBOUND_API_LIMITS_JSON.
 DEFAULT_POLICIES = (
-    ProviderPolicy("coinmarketcap", ("pro-api.coinmarketcap.com",), 45, 60, 2),
+    ProviderPolicy("defillama", ("coins.llama.fi", "api.llama.fi"), 2, 1, 2),
     ProviderPolicy("coinbase", ("api.coinbase.com",), 8, 1, 4),
     ProviderPolicy(
         "bybit",

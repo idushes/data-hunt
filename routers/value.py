@@ -90,7 +90,7 @@ RESOURCE_PARAMETER_NAMES = {
     "gmx": frozenset({"address", "chain_id"}),
     "polymarket": frozenset({"address", "size_threshold"}),
     "pendle": frozenset({"address", "include_closed"}),
-    "cmc-price": frozenset({"symbol", "id", "convert"}),
+    "cmc-price": frozenset({"coin", "symbol", "id", "convert"}),
 }
 RESOURCE_CREDENTIAL_PARAMS = {
     "paradex": frozenset({"token"}),

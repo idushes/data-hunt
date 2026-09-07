@@ -5,12 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY")
-COINMARKETCAP_BASE_URL = os.environ.get(
-    "COINMARKETCAP_BASE_URL", "https://pro-api.coinmarketcap.com"
-)
-COINMARKETCAP_CACHE_TTL_SECONDS = min(
-    int(os.environ.get("COINMARKETCAP_CACHE_TTL_SECONDS", 3600)), 3600
+DEFILLAMA_BASE_URL = os.environ.get("DEFILLAMA_BASE_URL", "https://coins.llama.fi")
+DEFILLAMA_CACHE_TTL_SECONDS = max(
+    60, min(int(os.environ.get("DEFILLAMA_CACHE_TTL_SECONDS", 3600)), 3600)
 )
 CSV_CACHE_TTL_SECONDS = max(60, int(os.environ.get("CSV_CACHE_TTL_SECONDS", 60)))
 CSV_CACHE_MAX_ENTRIES = max(1, int(os.environ.get("CSV_CACHE_MAX_ENTRIES", 256)))

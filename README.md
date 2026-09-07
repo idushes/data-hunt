@@ -1,3 +1,32 @@
+## Token prices from DefiLlama
+
+The price source uses DefiLlama's free `coins.llama.fi` API and needs no
+provider API key. Existing `/cmc/price.csv` URLs and `cmc-price` short value
+resources remain valid; the compatibility names prevent existing Sheets
+formulas from changing.
+
+Use `GET /cmc/price.csv?coin=pax-gold` for one USD price. The `coin` selector
+accepts a CoinGecko ID (with or without `coingecko:`), a supported ticker
+alias, or an exact `chain:contract` identifier. Non-EVM addresses preserve
+case. Data Hunt authentication is still required.
+
+Existing `symbol=PAXG`, `symbol=MON` (Monad), and `symbol=wstETH` requests keep
+working. Other supported aliases are BTC, ETH, WETH, WBTC, SOL, BNB, AVAX, ARB,
+OP, USDC, USDT, DAI, and STETH. Legacy CMC numeric IDs 1, 1027, 5426, 4705,
+12409, and 30495 are explicitly mapped; other numeric IDs must be replaced
+with an exact `coin` identifier. Only `convert=USD` is supported.
+
+Quotes carry the provider's timestamp in `X-Data-Updated-At`. New responses
+require a positive, finite price updated within one hour and confidence of
+at least 0.5 when supplied. The bounded per-process price cache reuses quotes
+for up to an hour, expires them at the source age limit, and combines
+simultaneous requests for the same token. The existing shared CSV cache
+and its stale fallback preserve that timestamp. The dedicated DefiLlama
+outbound queue defaults to two requests per second and two concurrent calls.
+`DEFILLAMA_CACHE_TTL_SECONDS` can reduce the price cache lifetime (60–3600
+seconds). `DEFILLAMA_BASE_URL` defaults to `https://coins.llama.fi`.
+CoinMarketCap configuration is no longer read.
+
 ## Feature request administration
 
 Set `FEATURE_REQUEST_ADMIN_ADDRESSES` to a comma-separated list of EVM wallet

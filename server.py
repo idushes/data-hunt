@@ -30,7 +30,7 @@ from routers.auth import router as auth_router
 from routers.binance import router as binance_router
 from routers.bybit import router as bybit_router
 from routers.chains import router as chains_router
-from routers.cmc import router as cmc_router
+from routers.defillama import router as defillama_router
 from routers.coinbase import router as coinbase_router
 from routers.compound import router as compound_router
 from routers.euler import router as euler_router
@@ -137,7 +137,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(cmc_router)
+app.include_router(defillama_router)
 app.include_router(paradex_router)
 app.include_router(lighter_router)
 app.include_router(hyperliquid_router)
