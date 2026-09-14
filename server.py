@@ -33,6 +33,7 @@ from routers.chains import router as chains_router
 from routers.defillama import router as defillama_router
 from routers.coinbase import router as coinbase_router
 from routers.compound import router as compound_router
+from routers.curve import router as curve_router
 from routers.euler import router as euler_router
 from routers.feature_requests import router as feature_requests_router
 from routers.funnel_analytics import router as funnel_analytics_router
@@ -154,6 +155,7 @@ app.include_router(stablecoins_router)
 app.include_router(stakedao_router)
 app.include_router(morpho_router)
 app.include_router(compound_router)
+app.include_router(curve_router)
 app.include_router(euler_router)
 app.include_router(lido_router)
 app.include_router(jupiter_router)

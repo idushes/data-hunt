@@ -203,3 +203,30 @@ in the `Authorization` header. Anonymous data access is disabled. Requests
 share a Redis-backed fixed-window limit of 120 per minute per authenticated
 account. Configure this limit with `VALUE_RATE_LIMIT_AUTHENTICATED` and
 `VALUE_RATE_LIMIT_WINDOW_SECONDS`.
+
+### Curve WBTC-backed crvUSD loans
+
+`GET /curve/positions.csv?address=0x...&chain_id=1` exports the Ethereum
+WBTC/crvUSD **mint** position shown in Curve's crvUSD market. Select **Curve
+WBTC loan** in Sheets. Other Curve lending markets and LP positions are not
+included. No wallet connection or signing is required.
+
+The export includes WBTC collateral, crvUSD held inside the AMM during soft
+liquidation, debt, full health percent, current borrow APR, oracle price, and
+soft-liquidation price range. Values ending in `_crvusd` are denominated in
+crvUSD, not USD. Position value includes both remaining WBTC valued at the
+oracle price and the AMM's crvUSD balance; net value subtracts debt.
+`distance_to_liquidation_percent` is `(oracle - upper bound) / oracle * 100`;
+it can be negative inside the soft-liquidation range. That range is not a
+fixed hard-liquidation price. `is_liquidatable` uses full health below zero.
+An address without a loan returns only CSV headers. RPC failures return 502.
+
+All contract reads use the same block, exposed as `block_number`. Override
+`CURVE_ETHEREUM_RPC_URL` to use a dedicated Ethereum RPC; the default is
+PublicNode. CSV responses use the existing 60-second cache and value links
+support `source=curve` with `position_id` as the stable key.
+
+Contract addresses, ABI and units were verified against the
+[official Curve SDK](https://github.com/curvefi/curve-llamalend.js), specifically
+`src/constants/llammas.ts`, `src/constants/abis/Controller.json` and
+`src/mintMarkets/MintMarketTemplate.ts`.

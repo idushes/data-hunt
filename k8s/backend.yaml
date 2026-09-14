@@ -178,6 +178,13 @@ spec:
                 name: data-hunt
                 port:
                   name: http
+          - path: /curve
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
           - path: /euler
             pathType: Prefix
             backend:

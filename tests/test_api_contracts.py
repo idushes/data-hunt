@@ -6,6 +6,7 @@ from routers.binance import BINANCE_CSV_HEADER
 from routers.bybit import BYBIT_CSV_HEADER
 from routers.coinbase import COINBASE_CSV_HEADER
 from routers.compound import COMPOUND_CSV_HEADER
+from routers.curve import CURVE_CSV_HEADER
 from routers.euler import EULER_CSV_HEADER
 from routers.fluid import FLUID_CSV_HEADER
 from routers.gmx import GMX_CSV_HEADER
@@ -52,6 +53,7 @@ PUBLISHED_VALUE_SOURCES = {
     "stablecoins": ValueSource("/stablecoins/balances.csv", "balance_id"),
     "stakedao": ValueSource("/stakedao/positions.csv", "position_id"),
     "morpho": ValueSource("/morpho/positions.csv", "position_id"),
+    "curve": ValueSource("/curve/positions.csv", "position_id"),
     "compound": ValueSource("/compound/positions.csv", "position_id"),
     "euler": ValueSource("/euler/positions.csv", "position_id"),
     "lido": ValueSource("/lido/positions.csv", "position_id"),
@@ -110,6 +112,7 @@ PUBLISHED_CSV_HEADERS = {
     "stakedao": STAKEDAO_CSV_HEADER,
     "morpho": MORPHO_CSV_HEADER,
     "compound": COMPOUND_CSV_HEADER,
+    "curve": CURVE_CSV_HEADER,
     "euler": EULER_CSV_HEADER,
     "lido": LIDO_CSV_HEADER,
     "jupiter-jlp": JUPITER_JLP_CSV_HEADER,

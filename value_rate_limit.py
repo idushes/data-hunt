@@ -37,6 +37,7 @@ PROTECTED_DATA_PREFIXES = (
     "/cmc",
     "/coinbase",
     "/compound",
+    "/curve",
     "/euler",
     "/fluid",
     "/gmx",
