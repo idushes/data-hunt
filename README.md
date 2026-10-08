@@ -1,3 +1,11 @@
+## Aave Arc positions
+
+`GET /aave/positions.csv?address=0x...&chain_id=5042` exports Aave V4
+supply and borrow positions on Arc mainnet, including APY and account risk
+metrics. Arc uses the V4 API only; wallets without positions return CSV
+headers. Select **Arc** under **Aave positions** in Sheets. The existing
+CSV columns and position keys are unchanged.
+
 ## Token prices from DefiLlama
 
 The price source uses DefiLlama's free `coins.llama.fi` API and needs no

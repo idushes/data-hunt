@@ -418,6 +418,88 @@ class AaveFetchTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(rows, [v3_row, v4_row])
 
+    async def test_arc_fetches_v4_only_and_allows_an_empty_wallet(self):
+        client = object()
+        with (
+            patch("routers.aave._fetch_aave_v3_rows", AsyncMock()) as v3,
+            patch(
+                "routers.aave._fetch_graphql",
+                AsyncMock(return_value={"positions": [], "supplies": [], "borrows": []}),
+            ) as fetch,
+        ):
+            rows = await _fetch_aave_rows(client, WALLET, 5042)
+
+        self.assertEqual(rows, [])
+        v3.assert_not_awaited()
+        self.assertEqual(fetch.await_count, 1)
+        self.assertEqual(fetch.await_args.args[3], AAVE_V4_API_URL)
+        variables = fetch.await_args.args[2]
+        self.assertEqual(
+            variables["positionsRequest"],
+            {"user": WALLET, "filter": {"chainIds": [5042]}},
+        )
+        for request in ("suppliesRequest", "borrowsRequest"):
+            self.assertEqual(
+                variables[request]["query"]["userChains"],
+                {"user": WALLET, "chainIds": [5042]},
+            )
+
+    async def test_arc_exports_v4_supply_and_borrow_with_chain_metadata(self):
+        position_id = f"5042:{V4_SPOKE}:42"
+        amount = {
+            "amount": {"value": "100"},
+            "exchange": {"value": "100"},
+            "exchangeRate": {"value": "1"},
+            "isWrappedNative": False,
+            "token": {"address": TOKEN, "info": {"name": "USD Coin", "symbol": "USDC"}},
+        }
+        reserve = {
+            "spoke": {"id": "arc-main"},
+            "summary": {
+                "supplyApy": {"normalized": "1.71"},
+                "borrowApy": {"normalized": "3"},
+            },
+            "canUseAsCollateral": True,
+        }
+        data = {
+            "positions": [{
+                "id": position_id,
+                "spoke": {
+                    "id": "arc-main", "name": "Main", "address": V4_SPOKE,
+                    "chain": {"name": "Arc", "chainId": 5042},
+                },
+            }],
+            "supplies": [{"balance": amount, "reserve": reserve, "isCollateral": True}],
+            "borrows": [{"debt": amount, "reserve": reserve}],
+        }
+        with patch("routers.aave._fetch_graphql", AsyncMock(return_value=data)):
+            rows = await _fetch_aave_rows(object(), WALLET, 5042)
+
+        self.assertEqual(len(rows), 1)
+        csv_row = next(csv.DictReader(io.StringIO(_render_csv(rows))))
+        self.assertEqual(csv_row["chain_id"], "5042")
+        self.assertEqual(csv_row["chain"], "Arc")
+        self.assertEqual(csv_row["protocol_version"], "v4")
+        self.assertEqual(csv_row["market"], "Aave V4 Main")
+        self.assertEqual(csv_row["token_symbol"], "USDC")
+        self.assertEqual(csv_row["supply_amount"], "100")
+        self.assertEqual(csv_row["borrow_amount"], "100")
+        self.assertEqual(csv_row["supply_apy_percent"], "1.71")
+        self.assertEqual(csv_row["net_usd"], "0")
+        self.assertEqual(csv_row["position_id"], f"v4:{position_id}:{TOKEN}")
+
+    async def test_arc_does_not_hide_v4_failure_as_empty_positions(self):
+        error = HTTPException(status_code=502, detail="Aave API request failed")
+        with (
+            patch("routers.aave._fetch_aave_v3_rows", AsyncMock()) as v3,
+            patch("routers.aave._fetch_aave_v4_rows", AsyncMock(side_effect=error)),
+        ):
+            with self.assertRaises(HTTPException) as context:
+                await _fetch_aave_rows(object(), WALLET, 5042)
+
+        self.assertIs(context.exception, error)
+        v3.assert_not_awaited()
+
 
 class AavePositionRouteTest(unittest.IsolatedAsyncioTestCase):
     async def test_returns_csv_rows_from_fetcher(self):

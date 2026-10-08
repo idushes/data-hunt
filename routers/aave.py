@@ -18,7 +18,8 @@ from outbound_queue import queued_async_client
 
 AAVE_V3_API_URL = "https://api.v3.aave.com/graphql"
 AAVE_V4_API_URL = "https://api.v4.aave.com/graphql"
-AAVE_V4_CHAIN_IDS = {1, 43114}
+AAVE_V4_ONLY_CHAIN_IDS = {5042}  # Arc has no V3 markets.
+AAVE_V4_CHAIN_IDS = {1, 43114} | AAVE_V4_ONLY_CHAIN_IDS
 AAVE_V4_ETHEREUM_RPC_URL = "https://ethereum-rpc.publicnode.com"
 AAVE_V4_ONCHAIN_SPOKES = {
     1: (
@@ -927,7 +928,9 @@ async def _fetch_aave_rows(
     wallet: str,
     chain_id: int,
 ) -> list[dict[str, str]]:
-    fetchers = [_fetch_aave_v3_rows(client, wallet, chain_id)]
+    fetchers = []
+    if chain_id not in AAVE_V4_ONLY_CHAIN_IDS:
+        fetchers.append(_fetch_aave_v3_rows(client, wallet, chain_id))
     if chain_id in AAVE_V4_CHAIN_IDS:
         fetchers.append(_fetch_aave_v4_rows(client, wallet, chain_id))
 
