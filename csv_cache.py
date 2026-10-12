@@ -497,6 +497,9 @@ class CSVCacheMiddleware:
         if request.method.upper() != "GET":
             return await call_next(request)
 
+        if getattr(request.state, "private_csv", False) or request.url.path.startswith("/fund-reports/"):
+            return await call_next(request)
+
         key = self._cache_key(request)
         client = self._redis()
         force_refresh = (

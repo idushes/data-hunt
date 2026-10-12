@@ -1,6 +1,7 @@
 import uuid
 from sqlalchemy import (
     Boolean,
+    Date,
     CheckConstraint,
     Column,
     Float,
@@ -8,6 +9,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -62,6 +64,42 @@ class AccountIdentity(Base):
     created_at = Column(Integer, nullable=False)
 
     account = relationship("Account", back_populates="identities")
+
+
+class FundReportSource(Base):
+    __tablename__ = "fund_report_source"
+
+    id = Column(String(32), primary_key=True)
+    account_id = Column(String, ForeignKey("account.id", ondelete="CASCADE"), nullable=False)
+    amount = Column(Numeric(24, 2), nullable=True)
+    currency = Column(String(3), nullable=True)
+    as_of = Column(Date, nullable=True)
+    updated_at = Column(Integer, nullable=True)
+    lease_token = Column(String(36), nullable=True)
+    lease_until = Column(Integer, nullable=False, default=0)
+
+
+class FundReportJob(Base):
+    __tablename__ = "fund_report_job"
+    __table_args__ = (
+        UniqueConstraint("source_id", "email_id", "attachment_id", name="uq_fund_report_attachment"),
+        UniqueConstraint("source_id", "file_hash", name="uq_fund_report_file_hash"),
+        Index("ix_fund_report_due", "status", "next_attempt_at"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    source_id = Column(String(32), ForeignKey("fund_report_source.id", ondelete="CASCADE"), nullable=False)
+    email_id = Column(String(36), nullable=False)
+    attachment_id = Column(String(36), nullable=False)
+    file_hash = Column(String(64), nullable=True)
+    status = Column(String(24), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(Integer, nullable=False)
+    next_attempt_at = Column(Integer, nullable=False)
+    error_code = Column(String(64), nullable=True)
+    notification_status = Column(String(24), nullable=False, default="none")
+    notification_attempts = Column(Integer, nullable=False, default=0)
+    notification_started_at = Column(Integer, nullable=True)
 
 
 class AccountToken(Base):

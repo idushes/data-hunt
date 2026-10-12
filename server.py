@@ -56,6 +56,8 @@ from routers.uniswap import router as uniswap_router
 from routers.uniswap_v4 import router as uniswap_v4_router
 from routers.value import router as value_router
 from utils import load_chains
+from fund_reports import worker as fund_report_worker
+from routers.fund_reports import router as fund_report_router
 from value_rate_limit import ValueRateLimitMiddleware
 
 
@@ -85,8 +87,10 @@ async def lifespan(app: FastAPI):
     await auth_funnel_retention.start()
     await scheduled_refresh.start(app)
     try:
+        await fund_report_worker.start()
         yield
     finally:
+        await fund_report_worker.stop()
         await scheduled_refresh.stop()
         await auth_funnel_retention.stop()
         await outbound_queue.stop_analytics()
@@ -139,6 +143,7 @@ app.add_middleware(
 )
 
 app.include_router(defillama_router)
+app.include_router(fund_report_router)
 app.include_router(paradex_router)
 app.include_router(lighter_router)
 app.include_router(hyperliquid_router)

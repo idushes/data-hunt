@@ -1,3 +1,11 @@
+## Private fund report import
+
+An optional, server-configured LAIF email import extracts the latest verified
+shareholding value and valuation date into two owner-only Sheets links.
+It is disabled by default and does not store PDFs or document text. See the
+[Russian setup guide](docs/fund-reports-setup.md) for Resend, Gmail, server secrets,
+account identification, and ready-to-copy formula generation.
+
 ## Aave Arc positions
 
 `GET /aave/positions.csv?address=0x...&chain_id=5042` exports Aave V4

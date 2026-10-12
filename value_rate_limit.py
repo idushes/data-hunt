@@ -40,6 +40,7 @@ PROTECTED_DATA_PREFIXES = (
     "/curve",
     "/euler",
     "/fluid",
+    "/fund-reports",
     "/gmx",
     "/hyperliquid",
     "/jupiter",
@@ -369,6 +370,15 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
                 },
             )
 
+        request.state.data_account_id = account_id
+        path = request.url.path
+        if path.startswith("/fund-reports/"):
+            request.state.private_csv = True
+        elif path.startswith("/v/"):
+            with self._session_factory() as db:
+                resource = db.get(ValueResource, path.rsplit("/", 1)[-1])
+                if resource is not None and resource.source == "fund-report":
+                    request.state.private_csv = True
         identity = f"account:{account_id}"
         limit = self.authenticated_limit
 
@@ -389,5 +399,8 @@ class ValueRateLimitMiddleware(BaseHTTPMiddleware):
         for name, value in headers.items():
             response.headers[name] = value
         if request.method.upper() == "GET" and response.status_code < 400:
-            response.headers["Cache-Control"] = "private, max-age=60"
+            if not getattr(request.state, "private_csv", False):
+                response.headers["Cache-Control"] = "private, max-age=60"
+            else:
+                response.headers["Cache-Control"] = "private, no-store"
         return self._track_usage(response, request, account_id)

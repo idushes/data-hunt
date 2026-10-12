@@ -32,6 +32,7 @@ COPY --from=builder /app/.venv /app/.venv
 # Copy the application code
 COPY server.py analytics_retention.py config.py database.py models.py dependencies.py security.py alembic.ini utils.py csv_cache.py redis_client.py outbound_queue.py scheduled_refresh.py coinbase_capsule.py bybit_capsule.py binance_capsule.py value_rate_limit.py google_identity.py ./
 COPY alembic ./alembic
+COPY fund_reports.py fund_report_config.py ./
 COPY routers ./routers
 COPY docs ./docs
 

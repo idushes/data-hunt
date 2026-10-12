@@ -103,6 +103,8 @@ class ScheduledRefreshQueue:
         if resource is None:
             return False
         source, parameters = resource
+        if source == "fund-report":
+            return False
 
         from routers.value import RESOURCE_CREDENTIAL_PARAMS
 

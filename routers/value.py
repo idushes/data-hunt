@@ -62,8 +62,9 @@ VALUE_SOURCES = {
     "pendle": ValueSource("/pendle/positions.csv", "position_id"),
 }
 VALUE_CONTROL_PARAMS = {"source", "key", "column", "auth_token"}
-DIRECT_VALUE_SOURCES = {"cmc-price": "/cmc/price.csv"}
+DIRECT_VALUE_SOURCES = {"cmc-price": "/cmc/price.csv", "fund-report": "/fund-reports/value.csv"}
 RESOURCE_PARAMETER_NAMES = {
+    "fund-report": frozenset({"field"}),
     "paradex": frozenset({"token", "account", "field"}),
     "lighter": frozenset({"token", "account", "accounts", "address", "field"}),
     "hyperliquid": frozenset({"address", "account", "field", "aggregate"}),
@@ -477,7 +478,11 @@ async def _resolve_direct_value(
     request: Request,
     source: str,
     forwarded_query: list[tuple[str, str]],
+    db: Session,
 ) -> Response:
+    if source == "fund-report":
+        from fund_reports import value_response
+        return value_response(request, db, dict(forwarded_query).get("field", ""))
     path = _resource_source_path(source)
     if path is None:
         raise HTTPException(status_code=400, detail="Unsupported value source")
@@ -552,9 +557,15 @@ async def get_stable_value(
 )
 async def create_value_resource(
     payload: CreateValueResource,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     source, key, column, parameters = _normalize_resource_request(payload)
+    if source == "fund-report":
+        from fund_reports import require_owner
+        require_owner(request, db)
+        if parameters.get("field") not in {"amount", "as_of"}:
+            raise HTTPException(status_code=400, detail="Field must be amount or as_of")
     resource = _get_or_create_resource(
         db,
         source,
@@ -778,6 +789,8 @@ async def preview_copied_value_resources(
     cache_requests = []
     for resource_id in resource_ids:
         resource = resources[resource_id]
+        if resource.source == "fund-report":
+            continue
         query_items = list(credentials.get(resource.source, {}).items())
         cache_requests.append((resource_id, f"/v/{resource_id}", query_items))
 
@@ -870,4 +883,5 @@ async def get_value_resource(
         request,
         resource.source,
         forwarded_query,
+        db,
     )
