@@ -26,12 +26,14 @@ from models import Account, FundReportJob, FundReportSource
 
 logger = logging.getLogger(__name__)
 logging.getLogger("pypdf").setLevel(logging.CRITICAL)
+ATTACHMENT_HOSTS = frozenset({"inbound-cdn.resend.com", "cdn.resend.app"})
 
 
 class _AttachmentLogFilter(logging.Filter):
     def filter(self, record):
         # httpx logs signed download URLs at INFO. Do not let them reach handlers.
-        return "inbound-cdn.resend.com" not in record.getMessage()
+        message = record.getMessage()
+        return not any(host in message for host in ATTACHMENT_HOSTS)
 
 
 logging.getLogger("httpx").addFilter(_AttachmentLogFilter())
@@ -350,7 +352,7 @@ class FundReportWorker:
             parsed = urlsplit(url)
             if (
                 parsed.scheme != "https"
-                or parsed.hostname != "inbound-cdn.resend.com"
+                or parsed.hostname not in ATTACHMENT_HOSTS
                 or parsed.username
                 or parsed.password
                 or parsed.port not in {None, 443}

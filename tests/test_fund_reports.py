@@ -5,6 +5,7 @@ import hmac
 import importlib.util
 import io
 import json
+import logging
 import tempfile
 import time
 import unittest
@@ -30,6 +31,7 @@ from csv_cache import CSVCacheMiddleware
 from database import Base, get_db
 from fund_report_config import FundReportSettings
 from fund_reports import (
+    _AttachmentLogFilter,
     FundReportWorker,
     ReportError,
     financial_block,
@@ -181,7 +183,7 @@ class FundReportTest(unittest.TestCase):
             return httpx.Response(
                 200, json={"size": len(self.pdf), "download_url": self.download_url}
             )
-        if request.url.host == "inbound-cdn.resend.com":
+        if request.url.host in {"inbound-cdn.resend.com", "cdn.resend.app"}:
             return httpx.Response(200, content=self.pdf)
         if request.url.host == "openrouter.ai":
             return httpx.Response(
@@ -500,12 +502,34 @@ class FundReportTest(unittest.TestCase):
         self.assertEqual(self.state(job_id)[2], "unknown")
         self.assertEqual(len(self.notification_keys), 0)
 
+    def test_current_resend_cdn_download(self):
+        self.download_url = "https://cdn.resend.app/file?signature=private"
+        job_id = self.job()
+        self.run_job()
+        self.assertEqual(self.state(job_id)[0], "succeeded")
+
+    def test_signed_download_urls_are_not_logged(self):
+        filter_ = _AttachmentLogFilter()
+        for host in ("cdn.resend.app", "inbound-cdn.resend.com"):
+            record = logging.LogRecord(
+                "httpx",
+                logging.INFO,
+                "",
+                1,
+                "GET https://%s/file?signature=secret",
+                (host,),
+                None,
+            )
+            self.assertFalse(filter_.filter(record))
+
     def test_attachment_ssrf_blocked(self):
         for url in [
             "https://localhost/private",
             "http://inbound-cdn.resend.com/file",
             "https://inbound-cdn.resend.com:8000/file",
             "https://inbound-cdn.resend.com@evil.test/file",
+            "https://cdn.resend.app.evil.test/file",
+            "http://cdn.resend.app/file",
         ]:
             with self.subTest(url=url):
                 self.download_url = url
