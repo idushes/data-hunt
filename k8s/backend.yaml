@@ -27,6 +27,9 @@ spec:
                 name: data-hunt-runtime
             - secretRef:
                 name: data-hunt-coinbase-capsule
+            - secretRef:
+                name: data-hunt-fund-reports
+                optional: true
           env:
             - name: DATABASE_URL
               valueFrom:
