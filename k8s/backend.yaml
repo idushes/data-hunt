@@ -209,6 +209,13 @@ spec:
                 name: data-hunt
                 port:
                   name: http
+          - path: /fund-reports
+            pathType: Prefix
+            backend:
+              service:
+                name: data-hunt
+                port:
+                  name: http
           - path: /gmx
             pathType: Prefix
             backend:
